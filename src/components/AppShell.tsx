@@ -9,7 +9,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3">
           <Link to="/" className="flex items-center gap-2 font-semibold">
             <span className="inline-block size-2 rounded-full bg-primary" />
-            teste
+            Hybrid KB Lab
           </Link>
           <nav className="flex items-center gap-4 text-sm">
             <Link to="/" className="text-muted-foreground hover:text-foreground" activeProps={{ className: "text-foreground" }}>

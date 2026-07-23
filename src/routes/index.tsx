@@ -15,7 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "teste — Projects" },
+      { title: "Hybrid KB Lab — Projects" },
       { name: "description", content: "Laboratório para validar bases de conhecimento híbridas para IA hoteleira." },
     ],
   }),

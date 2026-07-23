@@ -21,13 +21,13 @@ export function SettingsTab({ projectId }: { projectId: string }) {
         <TabsList>
           <TabsTrigger value="pipeline">Extraction Pipeline</TabsTrigger>
           <TabsTrigger value="data_points">Data Point Definitions</TabsTrigger>
-          <TabsTrigger value="llm">Answer Configuration</TabsTrigger>
+          <TabsTrigger value="llm">LLM Config</TabsTrigger>
         </TabsList>
         <TabsContent value="pipeline" className="mt-4">
-          <ExtractionSettingsTab projectId={projectId} />
+          <ExtractionSettingsTab />
         </TabsContent>
         <TabsContent value="data_points" className="mt-4">
-          <DataPointsTab projectId={projectId} />
+          <DataPointsTab />
         </TabsContent>
         <TabsContent value="llm" className="mt-4">
           <LLMConfigTab projectId={projectId} />

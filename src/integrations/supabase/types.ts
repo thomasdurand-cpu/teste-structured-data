@@ -65,7 +65,6 @@ export type Database = {
           id: string
           keywords: Json
           negative_keywords: Json
-          project_id: string | null
           regex_pattern: string | null
           required: boolean
           topic_definition_id: string
@@ -83,7 +82,6 @@ export type Database = {
           id?: string
           keywords?: Json
           negative_keywords?: Json
-          project_id?: string | null
           regex_pattern?: string | null
           required?: boolean
           topic_definition_id: string
@@ -101,7 +99,6 @@ export type Database = {
           id?: string
           keywords?: Json
           negative_keywords?: Json
-          project_id?: string | null
           regex_pattern?: string | null
           required?: boolean
           topic_definition_id?: string
@@ -109,17 +106,116 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "data_point_definitions_project_id_fkey"
+            foreignKeyName: "data_point_definitions_topic_definition_id_fkey"
+            columns: ["topic_definition_id"]
+            isOneToOne: false
+            referencedRelation: "topic_definitions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      experiment_snapshots: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+          overall_score: number | null
+          payload: Json
+          project_id: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+          overall_score?: number | null
+          payload: Json
+          project_id: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+          overall_score?: number | null
+          payload?: Json
+          project_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "experiment_snapshots_project_id_fkey"
             columns: ["project_id"]
             isOneToOne: false
             referencedRelation: "projects"
             referencedColumns: ["id"]
           },
+        ]
+      }
+      external_agents: {
+        Row: {
+          active: boolean
+          api_key: string | null
+          auth_header_name: string | null
+          auth_type: string
+          context_options: Json
+          created_at: string
+          custom_headers: Json
+          endpoint: string
+          id: string
+          model: string | null
+          name: string
+          payload_template: Json | null
+          project_id: string | null
+          response_path: string | null
+          temperature: number | null
+          timeout_ms: number | null
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          api_key?: string | null
+          auth_header_name?: string | null
+          auth_type?: string
+          context_options?: Json
+          created_at?: string
+          custom_headers?: Json
+          endpoint: string
+          id?: string
+          model?: string | null
+          name: string
+          payload_template?: Json | null
+          project_id?: string | null
+          response_path?: string | null
+          temperature?: number | null
+          timeout_ms?: number | null
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          api_key?: string | null
+          auth_header_name?: string | null
+          auth_type?: string
+          context_options?: Json
+          created_at?: string
+          custom_headers?: Json
+          endpoint?: string
+          id?: string
+          model?: string | null
+          name?: string
+          payload_template?: Json | null
+          project_id?: string | null
+          response_path?: string | null
+          temperature?: number | null
+          timeout_ms?: number | null
+          updated_at?: string
+        }
+        Relationships: [
           {
-            foreignKeyName: "data_point_definitions_topic_definition_id_fkey"
-            columns: ["topic_definition_id"]
+            foreignKeyName: "external_agents_project_id_fkey"
+            columns: ["project_id"]
             isOneToOne: false
-            referencedRelation: "topic_definitions"
+            referencedRelation: "projects"
             referencedColumns: ["id"]
           },
         ]
@@ -200,7 +296,7 @@ export type Database = {
           extraction_prompt: string
           id: string
           max_chunks: number
-          project_id: string | null
+          singleton: boolean
           system_prompt: string
           temperature: number
           unified_prompt: string | null
@@ -212,7 +308,7 @@ export type Database = {
           extraction_prompt: string
           id?: string
           max_chunks?: number
-          project_id?: string | null
+          singleton?: boolean
           system_prompt: string
           temperature?: number
           unified_prompt?: string | null
@@ -224,22 +320,14 @@ export type Database = {
           extraction_prompt?: string
           id?: string
           max_chunks?: number
-          project_id?: string | null
+          singleton?: boolean
           system_prompt?: string
           temperature?: number
           unified_prompt?: string | null
           updated_at?: string
           use_llm_for_dynamic?: boolean
         }
-        Relationships: [
-          {
-            foreignKeyName: "extraction_settings_project_id_fkey"
-            columns: ["project_id"]
-            isOneToOne: true
-            referencedRelation: "projects"
-            referencedColumns: ["id"]
-          },
-        ]
+        Relationships: []
       }
       knowledge_candidates: {
         Row: {
@@ -443,6 +531,113 @@ export type Database = {
           },
         ]
       }
+      knowledge_health_snapshots: {
+        Row: {
+          additional_info_count: number
+          approved_ratio: number
+          confidence_score: number
+          core_coverage: number
+          created_at: string
+          dynamic_ratio: number
+          flags: Json
+          health_score: number
+          id: string
+          missing_optional_fields: Json
+          missing_required_fields: Json
+          pending_additional_info_count: number
+          pending_candidates_count: number
+          pending_conflicts_count: number
+          project_id: string
+          required_coverage: number
+          topic_definition_id: string
+        }
+        Insert: {
+          additional_info_count?: number
+          approved_ratio?: number
+          confidence_score?: number
+          core_coverage?: number
+          created_at?: string
+          dynamic_ratio?: number
+          flags?: Json
+          health_score?: number
+          id?: string
+          missing_optional_fields?: Json
+          missing_required_fields?: Json
+          pending_additional_info_count?: number
+          pending_candidates_count?: number
+          pending_conflicts_count?: number
+          project_id: string
+          required_coverage?: number
+          topic_definition_id: string
+        }
+        Update: {
+          additional_info_count?: number
+          approved_ratio?: number
+          confidence_score?: number
+          core_coverage?: number
+          created_at?: string
+          dynamic_ratio?: number
+          flags?: Json
+          health_score?: number
+          id?: string
+          missing_optional_fields?: Json
+          missing_required_fields?: Json
+          pending_additional_info_count?: number
+          pending_candidates_count?: number
+          pending_conflicts_count?: number
+          project_id?: string
+          required_coverage?: number
+          topic_definition_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "knowledge_health_snapshots_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "knowledge_health_snapshots_topic_definition_id_fkey"
+            columns: ["topic_definition_id"]
+            isOneToOne: false
+            referencedRelation: "topic_definitions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      lab_settings: {
+        Row: {
+          created_at: string
+          id: string
+          project_id: string
+          settings: Json
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          project_id: string
+          settings?: Json
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          project_id?: string
+          settings?: Json
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "lab_settings_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: true
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       llm_calls: {
         Row: {
           created_at: string
@@ -455,6 +650,7 @@ export type Database = {
           output_tokens: number | null
           prompt_type: string
           response: Json | null
+          test_run_id: string | null
         }
         Insert: {
           created_at?: string
@@ -467,6 +663,7 @@ export type Database = {
           output_tokens?: number | null
           prompt_type: string
           response?: Json | null
+          test_run_id?: string | null
         }
         Update: {
           created_at?: string
@@ -479,6 +676,7 @@ export type Database = {
           output_tokens?: number | null
           prompt_type?: string
           response?: Json | null
+          test_run_id?: string | null
         }
         Relationships: [
           {
@@ -641,6 +839,340 @@ export type Database = {
           },
         ]
       }
+      suggested_data_points: {
+        Row: {
+          avg_confidence: number
+          consolidated_count: number
+          created_at: string
+          examples: Json
+          id: string
+          occurrences: number
+          projects_count: number
+          resulting_data_point_id: string | null
+          status: string
+          suggested_field_name: string
+          suggested_label: string
+          suggested_type: string
+          suggestion_score: number
+          topic_definition_id: string | null
+          topic_slug: string
+          updated_at: string
+        }
+        Insert: {
+          avg_confidence?: number
+          consolidated_count?: number
+          created_at?: string
+          examples?: Json
+          id?: string
+          occurrences?: number
+          projects_count?: number
+          resulting_data_point_id?: string | null
+          status?: string
+          suggested_field_name: string
+          suggested_label: string
+          suggested_type?: string
+          suggestion_score?: number
+          topic_definition_id?: string | null
+          topic_slug: string
+          updated_at?: string
+        }
+        Update: {
+          avg_confidence?: number
+          consolidated_count?: number
+          created_at?: string
+          examples?: Json
+          id?: string
+          occurrences?: number
+          projects_count?: number
+          resulting_data_point_id?: string | null
+          status?: string
+          suggested_field_name?: string
+          suggested_label?: string
+          suggested_type?: string
+          suggestion_score?: number
+          topic_definition_id?: string | null
+          topic_slug?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "suggested_data_points_resulting_data_point_id_fkey"
+            columns: ["resulting_data_point_id"]
+            isOneToOne: false
+            referencedRelation: "data_point_definitions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "suggested_data_points_topic_definition_id_fkey"
+            columns: ["topic_definition_id"]
+            isOneToOne: false
+            referencedRelation: "topic_definitions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      test_batches: {
+        Row: {
+          created_at: string
+          finished_at: string | null
+          id: string
+          model_name: string | null
+          modes: string[]
+          name: string
+          options: Json
+          project_id: string
+          question_count: number
+          started_at: string
+          statistics: Json
+          status: string
+          temperature: number | null
+        }
+        Insert: {
+          created_at?: string
+          finished_at?: string | null
+          id?: string
+          model_name?: string | null
+          modes?: string[]
+          name: string
+          options?: Json
+          project_id: string
+          question_count?: number
+          started_at?: string
+          statistics?: Json
+          status?: string
+          temperature?: number | null
+        }
+        Update: {
+          created_at?: string
+          finished_at?: string | null
+          id?: string
+          model_name?: string | null
+          modes?: string[]
+          name?: string
+          options?: Json
+          project_id?: string
+          question_count?: number
+          started_at?: string
+          statistics?: Json
+          status?: string
+          temperature?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "test_batches_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      test_evaluations: {
+        Row: {
+          completeness_score: number | null
+          created_at: string
+          evaluator: string
+          hallucination_score: number | null
+          id: string
+          latency_score: number | null
+          notes: string | null
+          precision_score: number | null
+          test_run_id: string
+          usefulness_score: number | null
+        }
+        Insert: {
+          completeness_score?: number | null
+          created_at?: string
+          evaluator?: string
+          hallucination_score?: number | null
+          id?: string
+          latency_score?: number | null
+          notes?: string | null
+          precision_score?: number | null
+          test_run_id: string
+          usefulness_score?: number | null
+        }
+        Update: {
+          completeness_score?: number | null
+          created_at?: string
+          evaluator?: string
+          hallucination_score?: number | null
+          id?: string
+          latency_score?: number | null
+          notes?: string | null
+          precision_score?: number | null
+          test_run_id?: string
+          usefulness_score?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "test_evaluations_test_run_id_fkey"
+            columns: ["test_run_id"]
+            isOneToOne: false
+            referencedRelation: "test_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      test_questions: {
+        Row: {
+          active: boolean
+          created_at: string
+          expected_answer: string | null
+          expected_facts: Json
+          id: string
+          project_id: string
+          question: string
+          topic_definition_ids: string[]
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          expected_answer?: string | null
+          expected_facts?: Json
+          id?: string
+          project_id: string
+          question: string
+          topic_definition_ids?: string[]
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          expected_answer?: string | null
+          expected_facts?: Json
+          id?: string
+          project_id?: string
+          question?: string
+          topic_definition_ids?: string[]
+        }
+        Relationships: [
+          {
+            foreignKeyName: "test_questions_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      test_runs: {
+        Row: {
+          answer: string | null
+          context_sent: Json | null
+          created_at: string
+          error_message: string | null
+          estimated_cost: number | null
+          external_agent_id: string | null
+          human_notes: string | null
+          human_score: number | null
+          id: string
+          input_tokens: number | null
+          latency_ms: number | null
+          llm_call_id: string | null
+          mode: string
+          model_configuration_id: string | null
+          model_name: string | null
+          output_tokens: number | null
+          project_id: string | null
+          prompt_template_id: string | null
+          question_id: string
+          request_payload: Json | null
+          status: string
+          test_batch_id: string | null
+        }
+        Insert: {
+          answer?: string | null
+          context_sent?: Json | null
+          created_at?: string
+          error_message?: string | null
+          estimated_cost?: number | null
+          external_agent_id?: string | null
+          human_notes?: string | null
+          human_score?: number | null
+          id?: string
+          input_tokens?: number | null
+          latency_ms?: number | null
+          llm_call_id?: string | null
+          mode: string
+          model_configuration_id?: string | null
+          model_name?: string | null
+          output_tokens?: number | null
+          project_id?: string | null
+          prompt_template_id?: string | null
+          question_id: string
+          request_payload?: Json | null
+          status?: string
+          test_batch_id?: string | null
+        }
+        Update: {
+          answer?: string | null
+          context_sent?: Json | null
+          created_at?: string
+          error_message?: string | null
+          estimated_cost?: number | null
+          external_agent_id?: string | null
+          human_notes?: string | null
+          human_score?: number | null
+          id?: string
+          input_tokens?: number | null
+          latency_ms?: number | null
+          llm_call_id?: string | null
+          mode?: string
+          model_configuration_id?: string | null
+          model_name?: string | null
+          output_tokens?: number | null
+          project_id?: string | null
+          prompt_template_id?: string | null
+          question_id?: string
+          request_payload?: Json | null
+          status?: string
+          test_batch_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "test_runs_external_agent_id_fkey"
+            columns: ["external_agent_id"]
+            isOneToOne: false
+            referencedRelation: "external_agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "test_runs_llm_call_id_fkey"
+            columns: ["llm_call_id"]
+            isOneToOne: false
+            referencedRelation: "llm_calls"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "test_runs_model_configuration_id_fkey"
+            columns: ["model_configuration_id"]
+            isOneToOne: false
+            referencedRelation: "model_configurations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "test_runs_prompt_template_id_fkey"
+            columns: ["prompt_template_id"]
+            isOneToOne: false
+            referencedRelation: "prompt_templates"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "test_runs_question_id_fkey"
+            columns: ["question_id"]
+            isOneToOne: false
+            referencedRelation: "test_questions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "test_runs_test_batch_id_fkey"
+            columns: ["test_batch_id"]
+            isOneToOne: false
+            referencedRelation: "test_batches"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       topic_definitions: {
         Row: {
           aliases: string[]
@@ -648,7 +1180,6 @@ export type Database = {
           description: string | null
           id: string
           name: string
-          project_id: string | null
           slug: string
         }
         Insert: {
@@ -657,7 +1188,6 @@ export type Database = {
           description?: string | null
           id?: string
           name: string
-          project_id?: string | null
           slug: string
         }
         Update: {
@@ -666,18 +1196,9 @@ export type Database = {
           description?: string | null
           id?: string
           name?: string
-          project_id?: string | null
           slug?: string
         }
-        Relationships: [
-          {
-            foreignKeyName: "topic_definitions_project_id_fkey"
-            columns: ["project_id"]
-            isOneToOne: false
-            referencedRelation: "projects"
-            referencedColumns: ["id"]
-          },
-        ]
+        Relationships: []
       }
       topics: {
         Row: {

@@ -10,9 +10,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { DataPointsTab } from "@/features/settings/DataPointsTab";
+import { ExtractionSettingsTab } from "@/features/settings/ExtractionSettingsTab";
+import { SchemaEvolutionTab } from "@/features/settings/SchemaEvolutionTab";
 
 export const Route = createFileRoute("/settings")({
-  head: () => ({ meta: [{ title: "Settings — teste" }] }),
+  head: () => ({ meta: [{ title: "Settings — Hybrid KB Lab" }] }),
   component: Settings,
 });
 
@@ -20,17 +23,18 @@ function Settings() {
   return (
     <AppShell>
       <h1 className="mb-6 text-2xl font-semibold">Settings</h1>
-      <p className="mb-6 text-sm text-muted-foreground">
-        Data points, prompt de extração e modelo/chave de cada agente agora ficam dentro da aba{" "}
-        <strong>Settings</strong> de cada projeto (são isolados por projeto). Aqui ficam só os
-        recursos compartilhados entre todos os projetos.
-      </p>
-      <Tabs defaultValue="prompts">
+      <Tabs defaultValue="data_points">
         <TabsList>
+          <TabsTrigger value="data_points">Data Points</TabsTrigger>
+          <TabsTrigger value="schema_evolution">Schema Evolution</TabsTrigger>
+          <TabsTrigger value="extraction">Extraction</TabsTrigger>
           <TabsTrigger value="prompts">Prompt Templates</TabsTrigger>
           <TabsTrigger value="models">Model Configurations</TabsTrigger>
           <TabsTrigger value="llm">LLM Calls</TabsTrigger>
         </TabsList>
+        <TabsContent value="data_points" className="mt-6"><DataPointsTab /></TabsContent>
+        <TabsContent value="schema_evolution" className="mt-6"><SchemaEvolutionTab /></TabsContent>
+        <TabsContent value="extraction" className="mt-6"><ExtractionSettingsTab /></TabsContent>
         <TabsContent value="prompts" className="mt-6"><Prompts /></TabsContent>
         <TabsContent value="models" className="mt-6"><Models /></TabsContent>
         <TabsContent value="llm" className="mt-6"><LLMCalls /></TabsContent>

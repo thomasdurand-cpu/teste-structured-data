@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,10 +11,9 @@ import { Switch } from "@/components/ui/switch";
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import { runExtraction } from "@/lib/ai.functions";
-import { consolidateKnowledge } from "@/lib/consolidation.functions";
-import { getExtractionModelOverride } from "@/features/settings/ExtractionSettingsTab";
-import { Sparkles } from "lucide-react";
+import { extractTopicAggregated } from "@/lib/ai.functions";
+import { getExtractionModelOverride } from "@/features/settings/LLMConfigTab";
+import { estimateCostUsd, formatUsd } from "@/lib/llm-pricing";
 
 
 const TOPIC_EMOJI: Record<string, string> = {
@@ -64,11 +62,8 @@ type Addl = {
 
 export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
-  const [processing, setProcessing] = useState(false);
-  const [processStep, setProcessStep] = useState<string>("");
+  const [reextractingAll, setReextractingAll] = useState(false);
   const qc = useQueryClient();
-  const runExtractionFn = useServerFn(runExtraction);
-  const consolidateFn = useServerFn(consolidateKnowledge);
 
   const { data: topics } = useQuery({
     queryKey: ["sk_topics", projectId],
@@ -124,18 +119,71 @@ export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
     },
   });
 
-  const { data: sources } = useQuery({
-    queryKey: ["sk_sources", projectId],
+  const { data: rawChunks } = useQuery({
+    queryKey: ["sk_raw_chunks_cost", projectId],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from("raw_sources")
-        .select("id, raw_chunks(count)")
-        .eq("project_id", projectId);
+        .from("raw_chunks")
+        .select("id, content, raw_sources!inner(project_id)")
+        .eq("raw_sources.project_id", projectId);
       if (error) throw error;
-      return (data ?? []) as unknown as Array<{ id: string; raw_chunks: Array<{ count: number }> }>;
+      return (data ?? []) as unknown as Array<{ id: string; content: string }>;
     },
   });
-  const totalChunks = (sources ?? []).reduce((s, r) => s + (r.raw_chunks?.[0]?.count ?? 0), 0);
+
+  // Model used for extraction cost estimate (Lovable provider only; server defaults otherwise)
+  const modelOverride = useMemo(() => getExtractionModelOverride(projectId), [projectId]);
+  const costModel = modelOverride?.model ?? "google/gemini-3-flash-preview";
+
+  // Approximate input tokens per topic based on which chunks match its aliases.
+  // Overhead per LLM call for prompt template + data points spec.
+  const PROMPT_OVERHEAD_CHARS = 2500;
+  const OUTPUT_TOKENS_EST = 500;
+
+  const topicCosts = useMemo(() => {
+    const map = new Map<string, { cost: number | null; chunks: number }>();
+    if (!topics || !rawChunks) return map;
+    for (const t of topics) {
+      const td = t.topic_definitions;
+      const terms = [td?.slug, td?.name, ...(td?.aliases ?? [])]
+        .filter(Boolean)
+        .map((s) => String(s).toLowerCase());
+      let chars = 0;
+      let count = 0;
+      for (const c of rawChunks) {
+        const lc = c.content.toLowerCase();
+        if (terms.some((term) => term && lc.includes(term))) {
+          chars += c.content.length;
+          count += 1;
+        }
+      }
+      if (count === 0) {
+        map.set(t.id, { cost: 0, chunks: 0 });
+        continue;
+      }
+      const inputTokens = Math.ceil((chars + PROMPT_OVERHEAD_CHARS) / 4);
+      const cost = estimateCostUsd({
+        provider: "lovable",
+        model: costModel,
+        inputTokens,
+        outputTokens: OUTPUT_TOKENS_EST,
+      });
+      map.set(t.id, { cost, chunks: count });
+    }
+    return map;
+  }, [topics, rawChunks, costModel]);
+
+  const totalCost = useMemo(() => {
+    let sum = 0;
+    let hasAny = false;
+    for (const v of topicCosts.values()) {
+      if (v.cost != null) {
+        sum += v.cost;
+        hasAny = true;
+      }
+    }
+    return hasAny ? sum : null;
+  }, [topicCosts]);
 
   const topicsWithData = useMemo(() => {
     if (!topics) return [];
@@ -151,47 +199,23 @@ export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
   const currentTopicId = selectedTopicId ?? topicsWithData[0]?.id ?? null;
   const currentTopic = topicsWithData.find((t) => t.id === currentTopicId);
 
-  async function processKnowledge() {
-    if (!sources || sources.length === 0) {
-      toast.error("Importe pelo menos uma fonte primeiro.");
-      return;
-    }
-    setProcessing(true);
-    try {
-      setProcessStep("Ativando tópicos…");
-      // Auto-activate this project's own topic_definitions (idempotent safety net —
-      // DataPointsTab already activates new topics on import).
-      const { data: defs } = await supabase
-        .from("topic_definitions").select("id").eq("project_id", projectId);
-      const { data: existing } = await supabase
-        .from("topics").select("topic_definition_id").eq("project_id", projectId);
-      const have = new Set((existing ?? []).map((e) => e.topic_definition_id));
-      const toInsert = (defs ?? []).filter((d) => !have.has(d.id)).map((d) => ({
-        project_id: projectId,
-        topic_definition_id: d.id,
-      }));
-      if (toInsert.length > 0) await supabase.from("topics").insert(toInsert as never);
+  if (!topics || topics.length === 0) {
+    return <p className="text-sm text-muted-foreground">Nenhum tópico ativo. Vá em Settings e ative tópicos.</p>;
+  }
 
-      // runExtraction wipes every existing knowledge_field/additional_info/candidate/conflict
-      // for this project's topics before extracting — every "Process Knowledge" click is a
-      // full reset + rebuild from the currently active source(s), never a merge with whatever
-      // an earlier run (possibly from a since-deleted source) left behind.
-      setProcessStep("Classificando tópicos e extraindo campos…");
-      const modelOverride = getExtractionModelOverride(projectId);
-      const ext = (await runExtractionFn({ data: { projectId, mode: "persist", modelOverride } })) as {
-        stats: { core_fields_found: number; dynamic_fields_found: number; additional_info_found: number };
-      };
-      setProcessStep("Consolidando base estruturada…");
-      await consolidateFn({ data: { projectId } });
-      toast.success(
-        `Base processada: ${ext.stats.core_fields_found} campos oficiais · ${ext.stats.dynamic_fields_found} dinâmicos · ${ext.stats.additional_info_found} info adicionais`,
-      );
-      qc.invalidateQueries();
+  async function reextractAll() {
+    setReextractingAll(true);
+    try {
+      const res = await extractTopicAggregated({ data: { projectId, modelOverride: getExtractionModelOverride(projectId) } });
+      const filled = res.topics.reduce((acc, t) => acc + t.core_filled, 0);
+      const total = res.topics.reduce((acc, t) => acc + t.core_total, 0);
+      toast.success(`Re-extração concluída · ${filled}/${total} campos preenchidos`);
+      qc.invalidateQueries({ queryKey: ["sk_fields", projectId] });
+      qc.invalidateQueries({ queryKey: ["sk_addls", projectId] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
-      setProcessing(false);
-      setProcessStep("");
+      setReextractingAll(false);
     }
   }
 
@@ -234,85 +258,77 @@ export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          Cada tópico agrega todos os chunks relevantes antes de chamar a LLM — captura mais detalhes e fica mais barato.
+        </p>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={exportAllJson}>
+            Exportar JSON unificado
+          </Button>
+          <div className="flex flex-col items-end">
+            <Button size="sm" variant="outline" onClick={reextractAll} disabled={reextractingAll}>
+              {reextractingAll ? "Re-extraindo todos…" : "Re-extrair todos os tópicos"}
+            </Button>
+            <span className="mt-1 text-[10px] text-muted-foreground">
+              Custo estimado total: <strong>{formatUsd(totalCost)}</strong>
+              <span className="ml-1 opacity-70">· {costModel}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-[260px_1fr]">
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Processar conhecimento</CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Constrói a <strong>Structured Knowledge</strong> a partir das fontes importadas. A Raw Knowledge nunca é
-            modificada. Cada clique <strong>apaga todos os dados estruturados existentes</strong> e refaz a extração
-            do zero a partir do(s) CSV(s) atualmente ativo(s) — não é incremental.
-          </p>
+          <CardTitle className="text-base">Tópicos</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm text-muted-foreground">
-              {sources?.length ?? 0} fonte(s) · {totalChunks} chunks prontos para processamento.
-            </div>
-            <Button onClick={processKnowledge} disabled={processing || (sources?.length ?? 0) === 0}>
-              <Sparkles className="mr-2 size-4" />
-              {processing ? processStep || "Processando…" : "Process Knowledge"}
-            </Button>
-          </div>
+        <CardContent className="space-y-1">
+          {topicsWithData.map((t) => {
+            const slug = t.topic_definitions?.slug ?? "?";
+            const name = t.topic_definitions?.name ?? slug;
+            const active = t.id === currentTopicId;
+            const tc = topicCosts.get(t.id);
+            return (
+              <button
+                key={t.id}
+                onClick={() => setSelectedTopicId(t.id)}
+                className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
+                  active ? "bg-accent text-accent-foreground" : "hover:bg-muted"
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <span>{TOPIC_EMOJI[slug] ?? "📁"}</span>
+                  <span>{name}</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="text-[10px] text-muted-foreground tabular-nums">
+                    {tc ? formatUsd(tc.cost) : "—"}
+                  </span>
+                  <Badge variant={t.count > 0 ? "secondary" : "outline"} className="text-[10px]">
+                    {t.count}
+                  </Badge>
+                </span>
+              </button>
+            );
+          })}
         </CardContent>
       </Card>
 
-      {!topics || topics.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Nenhum tópico ativo. Vá em Settings e ative tópicos.</p>
-      ) : (
-        <>
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-xs text-muted-foreground">
-              Cada tópico agrega todos os chunks relevantes antes de chamar a LLM — captura mais detalhes e fica mais barato.
-            </p>
-            <Button size="sm" variant="outline" onClick={exportAllJson}>
-              Exportar JSON unificado
-            </Button>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-[260px_1fr]">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Tópicos</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-1">
-                {topicsWithData.map((t) => {
-                  const slug = t.topic_definitions?.slug ?? "?";
-                  const name = t.topic_definitions?.name ?? slug;
-                  const active = t.id === currentTopicId;
-                  return (
-                    <button
-                      key={t.id}
-                      onClick={() => setSelectedTopicId(t.id)}
-                      className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
-                        active ? "bg-accent text-accent-foreground" : "hover:bg-muted"
-                      }`}
-                    >
-                      <span className="flex items-center gap-2">
-                        <span>{TOPIC_EMOJI[slug] ?? "📁"}</span>
-                        <span>{name}</span>
-                      </span>
-                      <Badge variant={t.count > 0 ? "secondary" : "outline"} className="text-[10px]">
-                        {t.count}
-                      </Badge>
-                    </button>
-                  );
-                })}
-              </CardContent>
-            </Card>
-
-            {currentTopic && (
-              <TopicEditor
-                key={currentTopic.id}
-                projectId={projectId}
-                topic={currentTopic}
-                dpds={(dpds ?? []).filter((d) => d.topic_definition_id === currentTopic.topic_definition_id)}
-                fields={(fields ?? []).filter((f) => f.topic_id === currentTopic.id)}
-                addls={(addls ?? []).filter((a) => a.topic_id === currentTopic.id)}
-              />
-            )}
-          </div>
-        </>
+      {currentTopic && (
+        <TopicEditor
+          key={currentTopic.id}
+          projectId={projectId}
+          topic={currentTopic}
+          dpds={(dpds ?? []).filter((d) => d.topic_definition_id === currentTopic.topic_definition_id)}
+          fields={(fields ?? []).filter((f) => f.topic_id === currentTopic.id)}
+          addls={(addls ?? []).filter((a) => a.topic_id === currentTopic.id)}
+          extractionCost={topicCosts.get(currentTopic.id)?.cost ?? null}
+          extractionChunks={topicCosts.get(currentTopic.id)?.chunks ?? 0}
+          costModel={costModel}
+        />
       )}
+      </div>
     </div>
   );
 }
@@ -320,13 +336,16 @@ export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
 
 
 function TopicEditor({
-  projectId, topic, dpds, fields, addls,
+  projectId, topic, dpds, fields, addls, extractionCost, extractionChunks, costModel,
 }: {
   projectId: string;
   topic: Topic;
   dpds: Dpd[];
   fields: Field[];
   addls: Addl[];
+  extractionCost: number | null;
+  extractionChunks: number;
+  costModel: string;
 }) {
 
   const qc = useQueryClient();
@@ -338,10 +357,31 @@ function TopicEditor({
   const [coreBooleans, setCoreBooleans] = useState<Record<string, boolean>>({});
   const [addlText, setAddlText] = useState("");
   const [saving, setSaving] = useState(false);
+  const [reextracting, setReextracting] = useState(false);
   const [jsonOpen, setJsonOpen] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
 
   const coreFilled = dpds.filter((d) => fields.some((f) => f.field_name === d.field_name && f.field_origin === "core" && f.field_value != null && f.field_value !== "")).length;
+
+  async function reextract() {
+    setReextracting(true);
+    try {
+      const res = await extractTopicAggregated({ data: { projectId, topicSlug: slug, modelOverride: getExtractionModelOverride(projectId) } });
+      const r = res.topics[0];
+      if (r) {
+        toast.success(`Re-extraído: ${r.core_filled}/${r.core_total} campos · ${r.chunks_used} chunks · +${r.additional_info_chars} chars de narrativa`);
+      } else {
+        toast.message("Re-extração concluída");
+      }
+      qc.invalidateQueries({ queryKey: ["sk_fields", projectId] });
+      qc.invalidateQueries({ queryKey: ["sk_addls", projectId] });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReextracting(false);
+    }
+  }
+
 
   useEffect(() => {
     const initStr: Record<string, string> = {};
@@ -485,12 +525,22 @@ function TopicEditor({
               Core Information são os campos oficiais. Informações adicionais é texto livre que complementa a base.
             </p>
           </div>
-          <div className="flex gap-1">
-            <Button variant="outline" size="sm" onClick={() => setSourcesOpen(true)}>
-              Source Chunks ({allSourceChunks.length})
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => setJsonOpen(true)}>View JSON</Button>
+          <div className="flex flex-col items-end gap-1">
+            <div className="flex gap-1">
+              <Button variant="default" size="sm" onClick={reextract} disabled={reextracting}>
+                {reextracting ? "Re-extraindo…" : "Re-extrair tópico"}
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setSourcesOpen(true)}>
+                Source Chunks ({allSourceChunks.length})
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setJsonOpen(true)}>View JSON</Button>
+            </div>
+            <span className="text-[10px] text-muted-foreground">
+              Custo estimado: <strong>{formatUsd(extractionCost)}</strong>
+              <span className="ml-1 opacity-70">· {extractionChunks} chunk{extractionChunks === 1 ? "" : "s"} · {costModel}</span>
+            </span>
           </div>
+
         </CardHeader>
       </Card>
 

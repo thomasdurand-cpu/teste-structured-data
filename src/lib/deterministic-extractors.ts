@@ -218,16 +218,8 @@ export function tryDeterministic(
       const neg = asStringArray(d.negative_keywords).length > 0
         ? asStringArray(d.negative_keywords)
         : asStringArray(kwObj.negative);
-      // Only attempt keyword matching when this data point has its OWN keywords configured.
-      // extractBooleanByKeywords() silently falls back to generic amenity-style defaults
-      // (sem/incluso/disponível/aceita…) when given empty arrays — fine for a field that's
-      // actually about availability, but it has no relation to fields like "discount" or
-      // "installment_fee", where matching a stray "sem" anywhere in the chunk produced a
-      // confident (and wrong) false that then blocked the LLM from ever being asked about it.
-      if (pos.length > 0 || neg.length > 0) {
-        const v = extractBooleanByKeywords(text, pos, neg);
-        if (v !== null) return { value: v, method: "keyword" };
-      }
+      const v = extractBooleanByKeywords(text, pos, neg);
+      if (v !== null) return { value: v, method: "keyword" };
     }
     if (d.field_type === "enum") {
       const map = asEnumMap(kwObj);
