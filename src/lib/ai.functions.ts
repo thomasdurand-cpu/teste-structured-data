@@ -297,7 +297,7 @@ function sentenceMentionsTimePair(sentence: string, start: string, end: string):
 function removeCoreFactsFromAdditionalInfo(
   text: string,
   topicSlug: string,
-  coreValues: Map<string, { value: unknown; chunkId: string }>,
+  coreValues: Map<string, { value: unknown; chunkIds: string[] }>,
 ): string {
   if (!text.trim()) return "";
   const start = toPlainTextValue(coreValues.get(`${topicSlug}_start_time`)?.value);
@@ -1100,7 +1100,7 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
         continue;
       }
 
-      const coreValues = new Map<string, { value: unknown; chunkId: string }>();
+      const coreValues = new Map<string, { value: unknown; chunkIds: string[] }>();
       const usedChunkIds: string[] = [];
       let additionalInfoText = "";
       let inT = 0, outT = 0;
@@ -1160,8 +1160,8 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
             const range = extractTimeRange(snippet);
             if (!range) continue;
             if (!isSaneTimeRange(range, topic.slug, startDpd.field_name, endDpd.field_name)) continue;
-            if (!coreValues.has(startDpd.field_name)) coreValues.set(startDpd.field_name, { value: range.start, chunkId: c.id });
-            if (!coreValues.has(endDpd.field_name)) coreValues.set(endDpd.field_name, { value: range.end, chunkId: c.id });
+            if (!coreValues.has(startDpd.field_name)) coreValues.set(startDpd.field_name, { value: range.start, chunkIds: [c.id] });
+            if (!coreValues.has(endDpd.field_name)) coreValues.set(endDpd.field_name, { value: range.end, chunkIds: [c.id] });
             break;
           }
         }
@@ -1175,7 +1175,7 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
             const det = tryDeterministic(d, snippet);
             if (!det) continue;
             if (d.field_type === "time" && !isSaneTime(det.value, topic.slug, d.field_name)) continue;
-            coreValues.set(d.field_name, { value: det.value, chunkId: c.id });
+            coreValues.set(d.field_name, { value: det.value, chunkIds: [c.id] });
           }
         }
 
@@ -1236,7 +1236,19 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
               if (coreValues.has(canonical)) continue;
               // Sanity check: drop nonsensical time values (e.g. café da manhã 20:00).
               if (dpTypeByName.get(canonical) === "time" && !isSaneTime(val, topic.slug, canonical)) continue;
-              coreValues.set(canonical, { value: val, chunkId: useChunks[0].id });
+              // The LLM sees every chunk in the batch combined into one prompt, so there's no
+              // direct signal for which one a given field actually came from. Try to pin it
+              // down by checking which chunk's text literally contains the extracted value;
+              // if none match (common for reformatted values like times), attribute the whole
+              // batch rather than falsely pointing at chunk[0] every time.
+              const needle = normalizeForMatch(toPlainTextValue(val));
+              const sourceChunk = needle.length >= 2
+                ? useChunks.find((c) => normalizeForMatch(topicRelevantSnippet(c.content, topic)).includes(needle))
+                : undefined;
+              coreValues.set(canonical, {
+                value: val,
+                chunkIds: sourceChunk ? [sourceChunk.id] : useChunks.map((c) => c.id),
+              });
             }
             if (typeof parsed.additional_info === "string" && parsed.additional_info.trim()) {
               const chunk = parsed.additional_info.trim();
@@ -1277,7 +1289,7 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
           approved_by_user: false,
           source_of_truth: "auto_single_candidate",
           consolidation_status: "consolidated",
-          source_chunk_ids: [newVal.chunkId],
+          source_chunk_ids: newVal.chunkIds,
           confidence: 0.85,
         };
         if (ex) {
