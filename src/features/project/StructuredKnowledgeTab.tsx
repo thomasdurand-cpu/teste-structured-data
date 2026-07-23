@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -8,9 +9,11 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Progress } from "@/components/ui/progress";
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
+import { Sparkles } from "lucide-react";
 import { extractTopicAggregated } from "@/lib/ai.functions";
 import { getExtractionModelOverride } from "@/features/settings/LLMConfigTab";
 import { estimateCostUsd, formatUsd } from "@/lib/llm-pricing";
@@ -60,10 +63,13 @@ type Addl = {
   source_chunk_ids: string[];
 };
 
+type ExtractionProgress = { done: number; total: number; current_topic: string | null };
+
 export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
-  const [reextractingAll, setReextractingAll] = useState(false);
+  const [processing, setProcessing] = useState(false);
   const qc = useQueryClient();
+  const extractTopicAggregatedFn = useServerFn(extractTopicAggregated);
 
   const { data: topics } = useQuery({
     queryKey: ["sk_topics", projectId],
@@ -76,6 +82,44 @@ export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
       return (data ?? []) as unknown as Topic[];
     },
   });
+
+  const { data: sourcesInfo } = useQuery({
+    queryKey: ["sk_sources_info", projectId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("raw_sources")
+        .select("id, raw_chunks(count)")
+        .eq("project_id", projectId);
+      if (error) throw error;
+      const rows = (data ?? []) as Array<{ id: string; raw_chunks: Array<{ count: number }> }>;
+      return {
+        sourceCount: rows.length,
+        chunkCount: rows.reduce((s, r) => s + (r.raw_chunks?.[0]?.count ?? 0), 0),
+      };
+    },
+  });
+
+  // Polls the in-flight extraction_runs row directly (RLS-open) while processing — the
+  // server function itself is one blocking request/response with no other channel to
+  // report intermediate progress, so the run row updated by extractTopicAggregated is
+  // the only way to show incremental feedback here.
+  const { data: progressRun } = useQuery({
+    queryKey: ["sk_extraction_progress", projectId],
+    enabled: processing,
+    refetchInterval: processing ? 1500 : false,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("extraction_runs")
+        .select("status, stats")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      return data as { status: string; stats: { progress?: ExtractionProgress } | null } | null;
+    },
+  });
+  const progress = progressRun?.stats?.progress ?? null;
 
 
   const { data: dpds } = useQuery({
@@ -199,23 +243,39 @@ export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
   const currentTopicId = selectedTopicId ?? topicsWithData[0]?.id ?? null;
   const currentTopic = topicsWithData.find((t) => t.id === currentTopicId);
 
-  if (!topics || topics.length === 0) {
-    return <p className="text-sm text-muted-foreground">Nenhum tópico ativo. Vá em Settings e ative tópicos.</p>;
-  }
-
-  async function reextractAll() {
-    setReextractingAll(true);
+  async function processKnowledge() {
+    if (!sourcesInfo || sourcesInfo.sourceCount === 0) {
+      toast.error("Importe pelo menos uma fonte na aba Sources primeiro.");
+      return;
+    }
+    setProcessing(true);
     try {
-      const res = await extractTopicAggregated({ data: { projectId, modelOverride: getExtractionModelOverride(projectId) } });
+      // Auto-activate all topic_definitions for this project (idempotent) — Process
+      // Knowledge is the single entry point, so it shouldn't require a separate trip
+      // to Settings/Topics before the first run.
+      const { data: defs } = await supabase.from("topic_definitions").select("id");
+      const { data: existing } = await supabase
+        .from("topics").select("topic_definition_id").eq("project_id", projectId);
+      const have = new Set((existing ?? []).map((e) => e.topic_definition_id));
+      const toInsert = (defs ?? []).filter((d) => !have.has(d.id)).map((d) => ({
+        project_id: projectId,
+        topic_definition_id: d.id,
+      }));
+      if (toInsert.length > 0) await supabase.from("topics").insert(toInsert as never);
+      qc.invalidateQueries({ queryKey: ["sk_topics", projectId] });
+
+      const res = await extractTopicAggregatedFn({
+        data: { projectId, modelOverride: getExtractionModelOverride(projectId) },
+      });
       const filled = res.topics.reduce((acc, t) => acc + t.core_filled, 0);
       const total = res.topics.reduce((acc, t) => acc + t.core_total, 0);
-      toast.success(`Re-extração concluída · ${filled}/${total} campos preenchidos`);
+      toast.success(`Processamento concluído · ${filled}/${total} campos preenchidos`);
       qc.invalidateQueries({ queryKey: ["sk_fields", projectId] });
       qc.invalidateQueries({ queryKey: ["sk_addls", projectId] });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
-      setReextractingAll(false);
+      setProcessing(false);
     }
   }
 
@@ -258,26 +318,56 @@ export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-muted-foreground">
-          Cada tópico agrega todos os chunks relevantes antes de chamar a LLM — captura mais detalhes e fica mais barato.
-        </p>
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={exportAllJson}>
-            Exportar JSON unificado
-          </Button>
-          <div className="flex flex-col items-end">
-            <Button size="sm" variant="outline" onClick={reextractAll} disabled={reextractingAll}>
-              {reextractingAll ? "Re-extraindo todos…" : "Re-extrair todos os tópicos"}
-            </Button>
-            <span className="mt-1 text-[10px] text-muted-foreground">
-              Custo estimado total: <strong>{formatUsd(totalCost)}</strong>
-              <span className="ml-1 opacity-70">· {costModel}</span>
-            </span>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Processar conhecimento</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Constrói a <strong>Structured Knowledge</strong> a partir das fontes importadas — a Raw Knowledge nunca é
+            modificada. Cada tópico agrega todos os chunks relevantes antes de chamar a LLM — captura mais detalhes e
+            fica mais barato.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm text-muted-foreground">
+              {sourcesInfo?.sourceCount ?? 0} fonte(s) · {sourcesInfo?.chunkCount ?? 0} chunks prontos para processamento.
+            </div>
+            <div className="flex flex-col items-end gap-1">
+              <Button onClick={processKnowledge} disabled={processing || (sourcesInfo?.sourceCount ?? 0) === 0}>
+                <Sparkles className="mr-2 size-4" />
+                {processing ? "Processando…" : "Process Knowledge"}
+              </Button>
+              <span className="text-[10px] text-muted-foreground">
+                Custo estimado total: <strong>{formatUsd(totalCost)}</strong>
+                <span className="ml-1 opacity-70">· {costModel}</span>
+              </span>
+            </div>
           </div>
-        </div>
+
+          {processing && (
+            <div className="space-y-1">
+              <Progress value={progress ? (progress.done / Math.max(1, progress.total)) * 100 : 0} />
+              <p className="text-[10px] text-muted-foreground">
+                {progress
+                  ? `${progress.done}/${progress.total} tópicos${progress.current_topic ? ` · processando: ${progress.current_topic}` : ""}`
+                  : "Iniciando…"}
+              </p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <div className="flex items-center justify-end">
+        <Button size="sm" variant="outline" onClick={exportAllJson}>
+          Exportar JSON unificado
+        </Button>
       </div>
 
+      {!topics || topics.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Nenhum tópico ativo ainda. Clique em "Process Knowledge" acima para começar.
+        </p>
+      ) : (
       <div className="grid gap-4 md:grid-cols-[260px_1fr]">
       <Card>
         <CardHeader>
@@ -329,6 +419,7 @@ export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
         />
       )}
       </div>
+      )}
     </div>
   );
 }

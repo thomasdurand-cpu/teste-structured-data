@@ -30,6 +30,39 @@ function getSb() {
   );
 }
 
+// Extraction over many chunks/topics means many sequential real LLM calls — a single run
+// can take well beyond typical platform request timeouts, which kills the process without
+// ever reaching its own catch block. That leaves extraction_runs stuck at status='running'
+// forever, and — without this guard — a second run can start concurrently against the same
+// project, hammering the same OpenRouter key and causing rate-limit failures in both.
+const STALE_RUN_MS = 10 * 60 * 1000;
+
+async function guardConcurrentExtraction(sb: ReturnType<typeof getSb>, projectId: string) {
+  const { data: active } = await sb
+    .from("extraction_runs")
+    .select("id, started_at")
+    .eq("project_id", projectId)
+    .eq("status", "running")
+    .order("started_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!active) return;
+
+  const age = Date.now() - new Date(active.started_at).getTime();
+  if (age < STALE_RUN_MS) {
+    throw new Error("Já existe uma extração em andamento para este projeto. Aguarde ela terminar antes de iniciar outra.");
+  }
+
+  // Older than the staleness window: the process that owned this run is essentially
+  // certain to have been killed by the platform before it could report its own outcome.
+  // Reclaim it so a legitimate new run isn't blocked forever by a row nobody will finish.
+  await sb.from("extraction_runs").update({
+    status: "failed",
+    finished_at: new Date().toISOString(),
+    error: "Run abandonado: excedeu o tempo limite sem concluir (provável timeout da plataforma).",
+  }).eq("id", active.id);
+}
+
 type GatewayResult = {
   content: string;
   inputTokens: number;
@@ -398,6 +431,8 @@ export const runExtraction = createServerFn({ method: "POST" })
     const { data: project } = await sb
       .from("projects").select("id, name").eq("id", data.projectId).maybeSingle();
     if (!project) throw new Error("Projeto não encontrado");
+
+    await guardConcurrentExtraction(sb, data.projectId);
 
     const { data: sources } = await sb
       .from("raw_sources").select("id").eq("project_id", data.projectId);
@@ -859,6 +894,8 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
       .from("projects").select("id, name").eq("id", data.projectId).maybeSingle();
     if (!project) throw new Error("Projeto não encontrado");
 
+    await guardConcurrentExtraction(sb, data.projectId);
+
     const { data: sources } = await sb
       .from("raw_sources").select("id").eq("project_id", data.projectId);
     const sourceIds = (sources ?? []).map((s) => s.id);
@@ -919,6 +956,23 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
     const effTemp = data.modelOverride?.temperature ?? (Number(modelCfg.temperature) || 0.2);
     const effMaxTokens = data.modelOverride?.maxTokens ?? modelCfg.max_tokens;
 
+    // Tracked in extraction_runs so guardConcurrentExtraction() can see this run too —
+    // without this, "Re-extrair todos" and the legacy runExtraction flow could still run
+    // concurrently against the same project, since only one of them wrote to this table.
+    const { data: run, error: runErr } = await sb
+      .from("extraction_runs")
+      .insert({
+        project_id: data.projectId,
+        raw_source_ids: sourceIds,
+        mode: "persist",
+        model_configuration_id: modelCfg.id,
+        status: "running",
+        started_at: new Date().toISOString(),
+      })
+      .select("*").single();
+    if (runErr || !run) throw new Error(runErr?.message ?? "Falha ao criar run");
+
+    try {
 
     const { data: topicsRaw } = await sb
       .from("topics")
@@ -1029,6 +1083,13 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
     }> = [];
 
     for (const topic of topics) {
+      // Progress feedback for the UI: it polls this run row directly via Supabase (RLS-open)
+      // while extraction is in flight, since this whole handler is one blocking request/response
+      // with no other channel to report intermediate state.
+      await sb.from("extraction_runs").update({
+        stats: { progress: { done: result.length, total: topics.length, current_topic: topic.slug } } as never,
+      }).eq("id", run.id);
+
       const dps = dpdByDefId.get(topic.defId) ?? [];
       const classified = chunks.filter((c) => (chunkTopicMap.get(c.id) ?? []).includes(topic.slug));
       if (classified.length === 0) {
@@ -1251,7 +1312,20 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
       });
     }
 
+    await sb.from("extraction_runs").update({
+      status: "done",
+      finished_at: new Date().toISOString(),
+      stats: { progress: { done: result.length, total: topics.length, current_topic: null }, topics: result } as never,
+    }).eq("id", run.id);
+
     return { topics: result };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await sb.from("extraction_runs").update({
+        status: "failed", finished_at: new Date().toISOString(), error: msg,
+      }).eq("id", run.id);
+      throw err;
+    }
   });
 
 // =====================================================

@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import Papa from "papaparse";
 import { toast } from "sonner";
@@ -11,10 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { importPdf, importUrl, importFastContent } from "@/lib/importers.functions";
-import { runExtraction } from "@/lib/ai.functions";
-import { getExtractionModelOverride } from "@/features/settings/LLMConfigTab";
-import { consolidateKnowledge } from "@/lib/consolidation.functions";
-import { Sparkles, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 
 type ImportResult = {
   source_id: string;
@@ -25,10 +22,6 @@ type ImportResult = {
 };
 
 export function UploadTab({ projectId }: { projectId: string }) {
-  const qc = useQueryClient();
-  const [processing, setProcessing] = useState(false);
-  const [processStep, setProcessStep] = useState<string>("");
-
   const { data: sources, refetch } = useQuery({
     queryKey: ["raw_sources", projectId],
     queryFn: async () => {
@@ -47,50 +40,6 @@ export function UploadTab({ projectId }: { projectId: string }) {
       }>;
     },
   });
-
-  const totalChunks = (sources ?? []).reduce((s, r) => s + (r.raw_chunks?.[0]?.count ?? 0), 0);
-
-  const runExtractionFn = useServerFn(runExtraction);
-  const consolidateFn = useServerFn(consolidateKnowledge);
-
-  async function processKnowledge() {
-    if (!sources || sources.length === 0) {
-      toast.error("Importe pelo menos uma fonte primeiro.");
-      return;
-    }
-    setProcessing(true);
-    try {
-      setProcessStep("Ativando tópicos…");
-      // Auto-activate all topic_definitions for this project (idempotent).
-      const { data: defs } = await supabase
-        .from("topic_definitions").select("id");
-      const { data: existing } = await supabase
-        .from("topics").select("topic_definition_id").eq("project_id", projectId);
-      const have = new Set((existing ?? []).map((e) => e.topic_definition_id));
-      const toInsert = (defs ?? []).filter((d) => !have.has(d.id)).map((d) => ({
-        project_id: projectId,
-        topic_definition_id: d.id,
-      }));
-      if (toInsert.length > 0) await supabase.from("topics").insert(toInsert as never);
-
-      setProcessStep("Classificando tópicos e extraindo campos…");
-      const modelOverride = getExtractionModelOverride(projectId);
-      const ext = (await runExtractionFn({ data: { projectId, mode: "persist", modelOverride } })) as {
-        stats: { core_fields_found: number; dynamic_fields_found: number; additional_info_found: number };
-      };
-      setProcessStep("Consolidando base estruturada…");
-      await consolidateFn({ data: { projectId } });
-      toast.success(
-        `Base processada: ${ext.stats.core_fields_found} campos oficiais · ${ext.stats.dynamic_fields_found} dinâmicos · ${ext.stats.additional_info_found} info adicionais`,
-      );
-      qc.invalidateQueries();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      setProcessing(false);
-      setProcessStep("");
-    }
-  }
 
   async function deleteSource(id: string) {
     if (!confirm("Apagar esta fonte e todos os chunks?")) return;
@@ -161,26 +110,6 @@ export function UploadTab({ projectId }: { projectId: string }) {
               ))}
             </div>
           )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Processar conhecimento</CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Constrói a <strong>Structured Knowledge</strong> a partir das fontes acima. A Raw Knowledge nunca é modificada.
-          </p>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="text-sm text-muted-foreground">
-              {sources?.length ?? 0} fonte(s) · {totalChunks} chunks prontos para processamento.
-            </div>
-            <Button onClick={processKnowledge} disabled={processing || (sources?.length ?? 0) === 0}>
-              <Sparkles className="mr-2 size-4" />
-              {processing ? processStep || "Processando…" : "Process Knowledge"}
-            </Button>
-          </div>
         </CardContent>
       </Card>
     </div>
