@@ -1,0 +1,855 @@
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json | undefined }
+  | Json[]
+
+export type Database = {
+  // Allows to automatically instantiate createClient with right options
+  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
+  __InternalSupabase: {
+    PostgrestVersion: "14.5"
+  }
+  public: {
+    Tables: {
+      additional_info: {
+        Row: {
+          approved_at: string | null
+          content: string
+          created_at: string
+          id: string
+          source_chunk_ids: string[]
+          status: string
+          topic_id: string
+        }
+        Insert: {
+          approved_at?: string | null
+          content: string
+          created_at?: string
+          id?: string
+          source_chunk_ids?: string[]
+          status?: string
+          topic_id: string
+        }
+        Update: {
+          approved_at?: string | null
+          content?: string
+          created_at?: string
+          id?: string
+          source_chunk_ids?: string[]
+          status?: string
+          topic_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "additional_info_topic_id_fkey"
+            columns: ["topic_id"]
+            isOneToOne: false
+            referencedRelation: "topics"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      data_point_definitions: {
+        Row: {
+          active: boolean
+          created_at: string
+          description: string | null
+          extraction_examples: Json
+          extraction_strategy: string
+          field_label: string
+          field_name: string
+          field_type: string
+          id: string
+          keywords: Json
+          negative_keywords: Json
+          project_id: string | null
+          regex_pattern: string | null
+          required: boolean
+          topic_definition_id: string
+          updated_at: string
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          description?: string | null
+          extraction_examples?: Json
+          extraction_strategy?: string
+          field_label: string
+          field_name: string
+          field_type: string
+          id?: string
+          keywords?: Json
+          negative_keywords?: Json
+          project_id?: string | null
+          regex_pattern?: string | null
+          required?: boolean
+          topic_definition_id: string
+          updated_at?: string
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          description?: string | null
+          extraction_examples?: Json
+          extraction_strategy?: string
+          field_label?: string
+          field_name?: string
+          field_type?: string
+          id?: string
+          keywords?: Json
+          negative_keywords?: Json
+          project_id?: string | null
+          regex_pattern?: string | null
+          required?: boolean
+          topic_definition_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "data_point_definitions_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "data_point_definitions_topic_definition_id_fkey"
+            columns: ["topic_definition_id"]
+            isOneToOne: false
+            referencedRelation: "topic_definitions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      extraction_runs: {
+        Row: {
+          created_at: string
+          error: string | null
+          finished_at: string | null
+          id: string
+          mode: string
+          model_configuration_id: string | null
+          preview_result: Json | null
+          project_id: string
+          prompt_template_id: string | null
+          raw_source_ids: string[]
+          started_at: string | null
+          stats: Json
+          status: string
+        }
+        Insert: {
+          created_at?: string
+          error?: string | null
+          finished_at?: string | null
+          id?: string
+          mode: string
+          model_configuration_id?: string | null
+          preview_result?: Json | null
+          project_id: string
+          prompt_template_id?: string | null
+          raw_source_ids?: string[]
+          started_at?: string | null
+          stats?: Json
+          status?: string
+        }
+        Update: {
+          created_at?: string
+          error?: string | null
+          finished_at?: string | null
+          id?: string
+          mode?: string
+          model_configuration_id?: string | null
+          preview_result?: Json | null
+          project_id?: string
+          prompt_template_id?: string | null
+          raw_source_ids?: string[]
+          started_at?: string | null
+          stats?: Json
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "extraction_runs_model_configuration_id_fkey"
+            columns: ["model_configuration_id"]
+            isOneToOne: false
+            referencedRelation: "model_configurations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "extraction_runs_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "extraction_runs_prompt_template_id_fkey"
+            columns: ["prompt_template_id"]
+            isOneToOne: false
+            referencedRelation: "prompt_templates"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      extraction_settings: {
+        Row: {
+          chunk_size: number
+          extraction_prompt: string
+          id: string
+          max_chunks: number
+          project_id: string | null
+          system_prompt: string
+          temperature: number
+          unified_prompt: string | null
+          updated_at: string
+          use_llm_for_dynamic: boolean
+        }
+        Insert: {
+          chunk_size?: number
+          extraction_prompt: string
+          id?: string
+          max_chunks?: number
+          project_id?: string | null
+          system_prompt: string
+          temperature?: number
+          unified_prompt?: string | null
+          updated_at?: string
+          use_llm_for_dynamic?: boolean
+        }
+        Update: {
+          chunk_size?: number
+          extraction_prompt?: string
+          id?: string
+          max_chunks?: number
+          project_id?: string | null
+          system_prompt?: string
+          temperature?: number
+          unified_prompt?: string | null
+          updated_at?: string
+          use_llm_for_dynamic?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "extraction_settings_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: true
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      knowledge_candidates: {
+        Row: {
+          confidence: number | null
+          created_at: string
+          extraction_method: string
+          extraction_run_id: string | null
+          field_name: string
+          field_origin: string
+          field_type: string
+          field_value: Json | null
+          id: string
+          project_id: string
+          source_chunk_ids: string[]
+          status: string
+          topic_definition_id: string
+        }
+        Insert: {
+          confidence?: number | null
+          created_at?: string
+          extraction_method?: string
+          extraction_run_id?: string | null
+          field_name: string
+          field_origin: string
+          field_type: string
+          field_value?: Json | null
+          id?: string
+          project_id: string
+          source_chunk_ids?: string[]
+          status?: string
+          topic_definition_id: string
+        }
+        Update: {
+          confidence?: number | null
+          created_at?: string
+          extraction_method?: string
+          extraction_run_id?: string | null
+          field_name?: string
+          field_origin?: string
+          field_type?: string
+          field_value?: Json | null
+          id?: string
+          project_id?: string
+          source_chunk_ids?: string[]
+          status?: string
+          topic_definition_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "knowledge_candidates_extraction_run_id_fkey"
+            columns: ["extraction_run_id"]
+            isOneToOne: false
+            referencedRelation: "extraction_runs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "knowledge_candidates_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "knowledge_candidates_topic_definition_id_fkey"
+            columns: ["topic_definition_id"]
+            isOneToOne: false
+            referencedRelation: "topic_definitions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      knowledge_conflicts: {
+        Row: {
+          candidate_ids: string[]
+          conflict_type: string
+          created_at: string
+          field_name: string
+          field_type: string
+          id: string
+          manual_value: Json | null
+          project_id: string
+          resolution_note: string | null
+          resolved_at: string | null
+          selected_candidate_id: string | null
+          status: string
+          topic_definition_id: string
+        }
+        Insert: {
+          candidate_ids?: string[]
+          conflict_type?: string
+          created_at?: string
+          field_name: string
+          field_type: string
+          id?: string
+          manual_value?: Json | null
+          project_id: string
+          resolution_note?: string | null
+          resolved_at?: string | null
+          selected_candidate_id?: string | null
+          status?: string
+          topic_definition_id: string
+        }
+        Update: {
+          candidate_ids?: string[]
+          conflict_type?: string
+          created_at?: string
+          field_name?: string
+          field_type?: string
+          id?: string
+          manual_value?: Json | null
+          project_id?: string
+          resolution_note?: string | null
+          resolved_at?: string | null
+          selected_candidate_id?: string | null
+          status?: string
+          topic_definition_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "knowledge_conflicts_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "knowledge_conflicts_selected_candidate_id_fkey"
+            columns: ["selected_candidate_id"]
+            isOneToOne: false
+            referencedRelation: "knowledge_candidates"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "knowledge_conflicts_topic_definition_id_fkey"
+            columns: ["topic_definition_id"]
+            isOneToOne: false
+            referencedRelation: "topic_definitions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      knowledge_fields: {
+        Row: {
+          approved_at: string | null
+          approved_by_user: boolean
+          candidate_ids: string[]
+          confidence: number | null
+          consolidation_status: string
+          created_at: string
+          field_name: string
+          field_origin: string
+          field_type: string
+          field_value: Json | null
+          id: string
+          source_chunk_ids: string[]
+          source_of_truth: string
+          topic_id: string
+          verified: boolean
+        }
+        Insert: {
+          approved_at?: string | null
+          approved_by_user?: boolean
+          candidate_ids?: string[]
+          confidence?: number | null
+          consolidation_status?: string
+          created_at?: string
+          field_name: string
+          field_origin: string
+          field_type: string
+          field_value?: Json | null
+          id?: string
+          source_chunk_ids?: string[]
+          source_of_truth?: string
+          topic_id: string
+          verified?: boolean
+        }
+        Update: {
+          approved_at?: string | null
+          approved_by_user?: boolean
+          candidate_ids?: string[]
+          confidence?: number | null
+          consolidation_status?: string
+          created_at?: string
+          field_name?: string
+          field_origin?: string
+          field_type?: string
+          field_value?: Json | null
+          id?: string
+          source_chunk_ids?: string[]
+          source_of_truth?: string
+          topic_id?: string
+          verified?: boolean
+        }
+        Relationships: [
+          {
+            foreignKeyName: "knowledge_fields_topic_id_fkey"
+            columns: ["topic_id"]
+            isOneToOne: false
+            referencedRelation: "topics"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      llm_calls: {
+        Row: {
+          created_at: string
+          estimated_cost: number | null
+          extraction_run_id: string | null
+          id: string
+          input_tokens: number | null
+          latency: number | null
+          model_name: string
+          output_tokens: number | null
+          prompt_type: string
+          response: Json | null
+        }
+        Insert: {
+          created_at?: string
+          estimated_cost?: number | null
+          extraction_run_id?: string | null
+          id?: string
+          input_tokens?: number | null
+          latency?: number | null
+          model_name: string
+          output_tokens?: number | null
+          prompt_type: string
+          response?: Json | null
+        }
+        Update: {
+          created_at?: string
+          estimated_cost?: number | null
+          extraction_run_id?: string | null
+          id?: string
+          input_tokens?: number | null
+          latency?: number | null
+          model_name?: string
+          output_tokens?: number | null
+          prompt_type?: string
+          response?: Json | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "llm_calls_extraction_run_id_fkey"
+            columns: ["extraction_run_id"]
+            isOneToOne: false
+            referencedRelation: "extraction_runs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      model_configurations: {
+        Row: {
+          active: boolean
+          api_key: string | null
+          created_at: string
+          id: string
+          max_tokens: number
+          model_name: string
+          provider: string
+          temperature: number
+        }
+        Insert: {
+          active?: boolean
+          api_key?: string | null
+          created_at?: string
+          id?: string
+          max_tokens?: number
+          model_name: string
+          provider: string
+          temperature?: number
+        }
+        Update: {
+          active?: boolean
+          api_key?: string | null
+          created_at?: string
+          id?: string
+          max_tokens?: number
+          model_name?: string
+          provider?: string
+          temperature?: number
+        }
+        Relationships: []
+      }
+      projects: {
+        Row: {
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+        }
+        Relationships: []
+      }
+      prompt_templates: {
+        Row: {
+          content: string
+          created_at: string
+          id: string
+          name: string
+          type: string
+          version: number
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          id?: string
+          name: string
+          type: string
+          version?: number
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          id?: string
+          name?: string
+          type?: string
+          version?: number
+        }
+        Relationships: []
+      }
+      raw_chunks: {
+        Row: {
+          content: string
+          created_at: string
+          extraction_status: string
+          id: string
+          metadata: Json
+          position: number
+          raw_source_id: string
+        }
+        Insert: {
+          content: string
+          created_at?: string
+          extraction_status?: string
+          id?: string
+          metadata?: Json
+          position?: number
+          raw_source_id: string
+        }
+        Update: {
+          content?: string
+          created_at?: string
+          extraction_status?: string
+          id?: string
+          metadata?: Json
+          position?: number
+          raw_source_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "raw_chunks_raw_source_id_fkey"
+            columns: ["raw_source_id"]
+            isOneToOne: false
+            referencedRelation: "raw_sources"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      raw_sources: {
+        Row: {
+          filename: string | null
+          id: string
+          project_id: string
+          type: string
+          uploaded_at: string
+        }
+        Insert: {
+          filename?: string | null
+          id?: string
+          project_id: string
+          type: string
+          uploaded_at?: string
+        }
+        Update: {
+          filename?: string | null
+          id?: string
+          project_id?: string
+          type?: string
+          uploaded_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "raw_sources_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      topic_definitions: {
+        Row: {
+          aliases: string[]
+          created_at: string
+          description: string | null
+          id: string
+          name: string
+          project_id: string | null
+          slug: string
+        }
+        Insert: {
+          aliases?: string[]
+          created_at?: string
+          description?: string | null
+          id?: string
+          name: string
+          project_id?: string | null
+          slug: string
+        }
+        Update: {
+          aliases?: string[]
+          created_at?: string
+          description?: string | null
+          id?: string
+          name?: string
+          project_id?: string | null
+          slug?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "topic_definitions_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      topics: {
+        Row: {
+          created_at: string
+          id: string
+          project_id: string
+          topic_definition_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          project_id: string
+          topic_definition_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          project_id?: string
+          topic_definition_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "topics_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "topics_topic_definition_id_fkey"
+            columns: ["topic_definition_id"]
+            isOneToOne: false
+            referencedRelation: "topic_definitions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+    }
+    Views: {
+      [_ in never]: never
+    }
+    Functions: {
+      [_ in never]: never
+    }
+    Enums: {
+      [_ in never]: never
+    }
+    CompositeTypes: {
+      [_ in never]: never
+    }
+  }
+}
+
+type DatabaseWithoutInternals = Omit<Database, "__InternalSupabase">
+
+type DefaultSchema = DatabaseWithoutInternals[Extract<keyof Database, "public">]
+
+export type Tables<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+        DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
+      DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])[TableName] extends {
+      Row: infer R
+    }
+    ? R
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])
+    ? (DefaultSchema["Tables"] &
+        DefaultSchema["Views"])[DefaultSchemaTableNameOrOptions] extends {
+        Row: infer R
+      }
+      ? R
+      : never
+    : never
+
+export type TablesInsert<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Insert: infer I
+    }
+    ? I
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Insert: infer I
+      }
+      ? I
+      : never
+    : never
+
+export type TablesUpdate<
+  DefaultSchemaTableNameOrOptions extends
+    | keyof DefaultSchema["Tables"]
+    | { schema: keyof DatabaseWithoutInternals },
+  TableName extends DefaultSchemaTableNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
+    : never = never,
+> = DefaultSchemaTableNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"][TableName] extends {
+      Update: infer U
+    }
+    ? U
+    : never
+  : DefaultSchemaTableNameOrOptions extends keyof DefaultSchema["Tables"]
+    ? DefaultSchema["Tables"][DefaultSchemaTableNameOrOptions] extends {
+        Update: infer U
+      }
+      ? U
+      : never
+    : never
+
+export type Enums<
+  DefaultSchemaEnumNameOrOptions extends
+    | keyof DefaultSchema["Enums"]
+    | { schema: keyof DatabaseWithoutInternals },
+  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
+    : never = never,
+> = DefaultSchemaEnumNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"][EnumName]
+  : DefaultSchemaEnumNameOrOptions extends keyof DefaultSchema["Enums"]
+    ? DefaultSchema["Enums"][DefaultSchemaEnumNameOrOptions]
+    : never
+
+export type CompositeTypes<
+  PublicCompositeTypeNameOrOptions extends
+    | keyof DefaultSchema["CompositeTypes"]
+    | { schema: keyof DatabaseWithoutInternals },
+  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+    schema: keyof DatabaseWithoutInternals
+  }
+    ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
+    : never = never,
+> = PublicCompositeTypeNameOrOptions extends {
+  schema: keyof DatabaseWithoutInternals
+}
+  ? DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"][CompositeTypeName]
+  : PublicCompositeTypeNameOrOptions extends keyof DefaultSchema["CompositeTypes"]
+    ? DefaultSchema["CompositeTypes"][PublicCompositeTypeNameOrOptions]
+    : never
+
+export const Constants = {
+  public: {
+    Enums: {},
+  },
+} as const
