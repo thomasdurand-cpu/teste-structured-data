@@ -1,7 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/knowledge_fields?id=in.\\(11161c30-0b1c-4579-96cb-31fdf5b46b35,7fded05f-057a-402b-8f75-6d112b70ed67\\)&select=field_name,field_value' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')"
+      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/knowledge_fields?id=in.\\(11161c30-0b1c-4579-96cb-31fdf5b46b35,7fded05f-057a-402b-8f75-6d112b70ed67\\)&select=field_name,field_value' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')",
+      "Bash(git fetch *)",
+      "Bash(git rev-list *)",
+      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/knowledge_fields?id=in.\\(11161c30-0b1c-4579-96cb-31fdf5b46b35,7fded05f-057a-402b-8f75-6d112b70ed67\\)&select=*' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')",
+      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/llm_calls?prompt_type=in.\\(extract_aggregated:breakfast,classify_batch\\)&select=*&order=created_at.desc&limit=5' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')",
+      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/llm_calls?created_at=gte.2026-07-23T18:26:00&select=*&order=created_at.asc' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')",
+      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/topics?project_id=eq.141e950d-c63f-4379-b1e5-7f3476c4e220&select=id,topic_definitions\\(slug\\)' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -o /c/Users/Asksuite/AppData/Local/Temp/claude/c--Users-Asksuite-Desktop-Teste-Structured-Base-teste-structured-data/798a3a3f-a51e-47bc-966b-5e947bd0e6a1/scratchpad/all_topics.json)",
+      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/knowledge_fields?field_type=eq.time&select=id,topic_id,field_name,field_value,source_chunk_ids' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -o /c/Users/Asksuite/AppData/Local/Temp/claude/c--Users-Asksuite-Desktop-Teste-Structured-Base-teste-structured-data/798a3a3f-a51e-47bc-966b-5e947bd0e6a1/scratchpad/all_time_fields.json)",
+      "Bash(node scan_dupes.js)",
+      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/raw_chunks?id=in.\\(480e4f42-0166-4493-b6a1-dbdc82a92b44,4e4d9a1a-5862-4b32-8a9b-b28262fa1738\\)&select=id,content' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -o /c/Users/Asksuite/AppData/Local/Temp/claude/c--Users-Asksuite-Desktop-Teste-Structured-Base-teste-structured-data/798a3a3f-a51e-47bc-966b-5e947bd0e6a1/scratchpad/gym_fd_chunks.json)",
+      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/knowledge_fields?topic_id=eq.3a3a47c4-c956-48ae-a136-476c7fa3b6aa&select=field_name,field_value' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')"
     ]
   }
 }
