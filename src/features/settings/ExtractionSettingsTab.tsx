@@ -12,11 +12,11 @@ import { Switch } from "@/components/ui/switch";
 
 export function ExtractionSettingsTab() {
   const qc = useQueryClient();
-  const { data } = useQuery({
+  const { data, error: queryError } = useQuery({
     queryKey: ["extraction_settings"],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from("extraction_settings").select("*").eq("singleton", true).maybeSingle();
+        .from("extraction_settings").select("*").limit(1).maybeSingle();
       if (error) throw error;
       return data;
     },
@@ -62,6 +62,14 @@ export function ExtractionSettingsTab() {
     }
   }
 
+
+  if (queryError) {
+    return (
+      <p className="text-sm text-destructive">
+        Erro ao carregar configurações: {queryError.message}
+      </p>
+    );
+  }
 
   if (!data) return <p className="text-sm text-muted-foreground">Carregando…</p>;
 

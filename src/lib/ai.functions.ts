@@ -406,7 +406,7 @@ export const runExtraction = createServerFn({ method: "POST" })
 
     // Settings
     const { data: settings } = await sb
-      .from("extraction_settings").select("*").eq("singleton", true).maybeSingle();
+      .from("extraction_settings").select("*").limit(1).maybeSingle();
     if (!settings) throw new Error("Configuração de extração ausente.");
 
     const { data: modelCfg } = await sb
