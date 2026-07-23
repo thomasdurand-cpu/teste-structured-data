@@ -1107,6 +1107,21 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
 
       const dpTypeByName = new Map(dps.map((d) => [d.field_name, d.field_type]));
       const timeStarts = dps.filter((d) => d.field_type === "time" && /(_start_time|_start|_inicio|_inicio_time)$/.test(d.field_name));
+      // Fields that belong to a start/end pair: the naive single-value extractor below can't
+      // tell "start" from "end" apart — it just returns the first time-like token it finds —
+      // so if the pair-aware extractTimeRange pass above didn't resolve both sides together,
+      // letting each field fall through to it independently would assign them the SAME
+      // (and often unrelated) value. Better to leave them unresolved for the LLM than to
+      // silently write a wrong-but-plausible duplicate.
+      const pairedTimeFieldNames = new Set<string>();
+      for (const startDpd of timeStarts) {
+        const base = startDpd.field_name.replace(/(_start_time|_start|_inicio|_inicio_time)$/, "");
+        const endDpd = dps.find((d) => d.field_type === "time" && (d.field_name === `${base}_end_time` || d.field_name === `${base}_end` || d.field_name === `${base}_fim` || d.field_name === `${base}_fim_time`));
+        if (endDpd) {
+          pairedTimeFieldNames.add(startDpd.field_name);
+          pairedTimeFieldNames.add(endDpd.field_name);
+        }
+      }
       const allowedCore = new Set(dps.map((d) => d.field_name));
       const coreAlias = new Map<string, string>();
       for (const d of dps) {
@@ -1156,6 +1171,7 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
           const snippet = topicRelevantSnippet(c.content, topic);
           for (const d of dps) {
             if (coreValues.has(d.field_name)) continue;
+            if (d.field_type === "time" && pairedTimeFieldNames.has(d.field_name)) continue;
             const det = tryDeterministic(d, snippet);
             if (!det) continue;
             if (d.field_type === "time" && !isSaneTime(det.value, topic.slug, d.field_name)) continue;

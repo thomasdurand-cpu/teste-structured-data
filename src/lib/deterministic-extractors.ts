@@ -7,28 +7,41 @@ function pad2(n: number) { return n < 10 ? `0${n}` : String(n); }
 
 // Time formats supported:
 //   06:30  6:30  6h  6h30  06h30  às 10h  a partir das 15h
-const TIME_REGEX = /\b(\d{1,2})\s*[:hH]\s*(\d{0,2})\b/;
+//   6.30am  9.30 pm  10am  11:00pm  (English am/pm notation — colon, period, or no separator)
+// Requires either a separator+digits or an am/pm marker, so bare numbers ("2024", "50")
+// are never mistaken for a time.
+const TIME_TOKEN_REGEX =
+  /\b(\d{1,2})(?:(?:[:h.](\d{0,2}))(?:\s*([ap]\.?m\.?))?|\s*([ap]\.?m\.?))\b/i;
 
-export function extractTime(text: string): string | null {
-  const m = TIME_REGEX.exec(text);
-  if (!m) return null;
-  const h = parseInt(m[1], 10);
-  const min = m[2] && m[2].length > 0 ? parseInt(m[2], 10) : 0;
-  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+function normalizeTimeMatch(m: RegExpExecArray): string | null {
+  const min = m[2] ? parseInt(m[2], 10) : 0;
+  if (min < 0 || min > 59) return null;
+  const ampm = (m[3] ?? m[4] ?? "").toLowerCase();
+  let h = parseInt(m[1], 10);
+  if (ampm.startsWith("p") && h < 12) h += 12;
+  else if (ampm.startsWith("a") && h === 12) h = 0;
+  if (h < 0 || h > 23) return null;
   return `${pad2(h)}:${pad2(min)}`;
 }
 
+export function extractTime(text: string): string | null {
+  const m = TIME_TOKEN_REGEX.exec(text);
+  if (!m) return null;
+  return normalizeTimeMatch(m);
+}
+
 // Time range: returns FIRST two times found if separated by typical range markers.
-const RANGE_SEPARATORS = /(\bàs?\b|\bate\b|-{1,2}|—|–|\bas\b|\be\b)/i;
+// Includes "to" (English: "6.30am to 10am") alongside the Portuguese markers.
+const RANGE_SEPARATORS = /(\bàs?\b|\bate\b|-{1,2}|—|–|\bas\b|\be\b|\bto\b)/i;
 
 export function extractTimeRange(text: string): { start: string; end: string } | null {
   const norm = STRIP_DIACRITICS(text);
-  // Find sequence: time ... separator ... time
-  const re = /(\d{1,2})\s*[:hH]\s*(\d{0,2})/g;
-  const matches: Array<{ h: string; m: string; idx: number }> = [];
+  const re = new RegExp(TIME_TOKEN_REGEX.source, "gi");
+  const matches: Array<{ time: string; idx: number }> = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(norm)) !== null) {
-    matches.push({ h: m[1], m: m[2] ?? "", idx: m.index });
+    const time = normalizeTimeMatch(m);
+    if (time) matches.push({ time, idx: m.index });
     if (matches.length >= 4) break;
   }
   if (matches.length < 2) return null;
@@ -36,10 +49,7 @@ export function extractTimeRange(text: string): { start: string; end: string } |
   const b = matches[1];
   const between = norm.slice(a.idx, b.idx);
   if (!RANGE_SEPARATORS.test(between)) return null;
-  const start = `${pad2(parseInt(a.h, 10))}:${pad2(a.m ? parseInt(a.m, 10) : 0)}`;
-  const end = `${pad2(parseInt(b.h, 10))}:${pad2(b.m ? parseInt(b.m, 10) : 0)}`;
-  if (parseInt(a.h, 10) > 23 || parseInt(b.h, 10) > 23) return null;
-  return { start, end };
+  return { start: a.time, end: b.time };
 }
 
 // Currency: R$ 50, R$50,00, 50 reais, USD 20, US$ 20

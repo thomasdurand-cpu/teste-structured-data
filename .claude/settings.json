@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/knowledge_fields?id=in.\\(11161c30-0b1c-4579-96cb-31fdf5b46b35,7fded05f-057a-402b-8f75-6d112b70ed67\\)&select=field_name,field_value' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')"
+    ]
+  }
+}
