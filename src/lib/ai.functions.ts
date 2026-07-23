@@ -513,6 +513,23 @@ export const runExtraction = createServerFn({ method: "POST" })
       dpdByDefId.set(d.topic_definition_id, list);
     }
 
+    // Re-extraction never reuses or merges with previously stored data: before the extraction
+    // agent runs, wipe all structured data for every topic this run will touch — regardless of
+    // whether the raw source is the same CSV as last time or brand new content. Scoped to
+    // persist mode only — a dry_run never writes data, so there is nothing to repopulate.
+    if (data.mode === "persist") {
+      const topicIds = topics.map((t) => t.topicId);
+      await assertDb(sb.from("knowledge_fields").delete().in("topic_id", topicIds), "Apagar campos estruturados anteriores");
+      await assertDb(sb.from("additional_info").delete().in("topic_id", topicIds), "Apagar informações adicionais anteriores");
+      await assertDb(
+        sb.from("knowledge_candidates").delete().eq("project_id", data.projectId).in("topic_definition_id", defIds),
+        "Apagar candidatos anteriores",
+      );
+      await assertDb(
+        sb.from("knowledge_conflicts").delete().eq("project_id", data.projectId).in("topic_definition_id", defIds),
+        "Apagar conflitos anteriores",
+      );
+    }
 
     // Create the extraction_run row
     const { data: run, error: runErr } = await sb
@@ -804,19 +821,19 @@ export const runExtraction = createServerFn({ method: "POST" })
             persisted.candidates++;
           }
 
-          // Additional info — dedupe by content; entra como pending para aprovação.
-          const { data: existingAdd } = await sb
-            .from("additional_info").select("id, content").eq("topic_id", topic.topicId);
-          const existingAddSet = new Set((existingAdd ?? []).map((a) => a.content.trim().toLowerCase()));
+          // Additional info was already wiped for this topic above — dedupe within this run's
+          // own results (a chunk can repeat the same fact across pages).
+          const seenContent = new Set<string>();
           for (const a of t.additional_information) {
-            if (existingAddSet.has(a.content.trim().toLowerCase())) continue;
+            const key = a.content.trim().toLowerCase();
+            if (seenContent.has(key)) continue;
+            seenContent.add(key);
             await sb.from("additional_info").insert({
               topic_id: topic.topicId,
               content: a.content,
               source_chunk_ids: a.source_chunk_ids as never,
               status: "pending",
             } as never);
-            existingAddSet.add(a.content.trim().toLowerCase());
             persisted.additional_info++;
           }
         }
@@ -878,8 +895,10 @@ export const persistRun = createServerFn({ method: "POST" })
 // extractTopicAggregated — re-extracts one (or all) topics
 // by aggregating ALL classified chunks per topic into a single
 // LLM call. Writes results DIRECTLY into knowledge_fields
-// (consolidated) and additional_info (approved), preserving
-// any record marked as user-edited (source_chunk_ids = []).
+// (consolidated) and additional_info (approved). Every run wipes
+// all previously stored structured data for the topic(s) it targets
+// before extracting — re-extraction never merges with old data,
+// whether the raw source is the same CSV as last time or brand new.
 // =====================================================
 export const extractTopicAggregated = createServerFn({ method: "POST" })
   .inputValidator((input: {
@@ -1091,6 +1110,18 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
       }).eq("id", run.id);
 
       const dps = dpdByDefId.get(topic.defId) ?? [];
+
+      // Re-extraction never reuses or merges with previously stored data — every scan starts
+      // this topic from a clean slate, regardless of whether the raw source changed since
+      // the last run. This wipes ALL structured data for the topic, including fields the
+      // user had manually approved.
+      await assertDb(sb.from("knowledge_fields").delete().eq("topic_id", topic.topicId), "Apagar campos estruturados anteriores");
+      await assertDb(sb.from("additional_info").delete().eq("topic_id", topic.topicId), "Apagar informações adicionais anteriores");
+      await assertDb(
+        sb.from("knowledge_conflicts").delete().eq("project_id", data.projectId).eq("topic_definition_id", topic.defId),
+        "Apagar conflitos anteriores",
+      );
+
       const classified = chunks.filter((c) => (chunkTopicMap.get(c.id) ?? []).includes(topic.slug));
       if (classified.length === 0) {
         result.push({
@@ -1269,18 +1300,11 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
 
       additionalInfoText = removeCoreFactsFromAdditionalInfo(additionalInfoText, topic.slug, coreValues);
 
-      // ---- Persist core fields ----
-      const { data: existingFields } = await sb
-        .from("knowledge_fields").select("id, field_name, field_origin, approved_by_user")
-        .eq("topic_id", topic.topicId);
-      const existing = existingFields ?? [];
-
+      // ---- Persist core fields (fresh insert — old data for this topic was already wiped above) ----
       for (const d of dps) {
         const newVal = coreValues.get(d.field_name);
         if (!newVal) continue;
-        const ex = existing.find((f) => f.field_name === d.field_name && f.field_origin === "core");
-        if (ex?.approved_by_user) continue;
-        const payload = {
+        await assertDb(sb.from("knowledge_fields").insert({
           topic_id: topic.topicId,
           field_name: d.field_name,
           field_type: d.field_type,
@@ -1291,41 +1315,17 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
           consolidation_status: "consolidated",
           source_chunk_ids: newVal.chunkIds,
           confidence: 0.85,
-        };
-        if (ex) {
-          await assertDb(sb.from("knowledge_fields").update(payload as never).eq("id", ex.id), `Atualizar ${d.field_name}`);
-        } else {
-          await assertDb(sb.from("knowledge_fields").insert(payload as never), `Criar ${d.field_name}`);
-        }
+        } as never), `Criar ${d.field_name}`);
       }
 
-      // Remove dynamic fields — they should live inside additional_info.
-      const dynamicIds = existing.filter((f) => f.field_origin === "dynamic").map((f) => f.id);
-      if (dynamicIds.length > 0) {
-        await assertDb(sb.from("knowledge_fields").delete().in("id", dynamicIds), "Remover campos dinâmicos duplicados");
-      }
-
-      // ---- Persist additional_info ----
-      const { data: addls } = await sb
-        .from("additional_info").select("id, source_chunk_ids, status").eq("topic_id", topic.topicId);
-      const aiAddls = (addls ?? []).filter((a) => (a.source_chunk_ids ?? []).length > 0);
-      if (aiAddls.length > 0) {
-        await assertDb(
-          sb.from("additional_info").update({ status: "rejected" } as never)
-            .in("id", aiAddls.map((a) => a.id)),
-          "Arquivar narrativa anterior",
-        );
-      }
+      // ---- Persist additional_info (fresh insert) ----
       if (additionalInfoText.length > 0) {
-        const userEdit = (addls ?? []).find(
-          (a) => (a.source_chunk_ids ?? []).length === 0 && a.status === "approved",
-        );
         await assertDb(sb.from("additional_info").insert({
           topic_id: topic.topicId,
           content: additionalInfoText,
-          status: userEdit ? "pending" : "approved",
+          status: "approved",
           source_chunk_ids: usedChunkIds,
-          approved_at: userEdit ? null : new Date().toISOString(),
+          approved_at: new Date().toISOString(),
         } as never), "Criar narrativa complementar");
       }
 

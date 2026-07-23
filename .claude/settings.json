@@ -16,7 +16,9 @@
       "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/raw_chunks?id=eq.3fc2f339-a61c-43ea-8827-f2c2d041c602&select=id,content,position' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')",
       "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/raw_chunks?id=eq.3be6754e-bd92-427c-b0c7-b10579262754&select=id,content,position' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')",
       "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/extraction_runs?select=id,status,started_at,finished_at&order=created_at.desc&limit=5' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')",
-      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/llm_calls?select=prompt_type,created_at,latency&order=created_at.desc&limit=8' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')"
+      "Bash(curl -s 'https://wvvlpsgumdlgrahusifc.supabase.co/rest/v1/llm_calls?select=prompt_type,created_at,latency&order=created_at.desc&limit=8' -H 'apikey: sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b' -H 'Authorization: Bearer sb_publishable_VrHjZhefABW4JjztepflnQ_cc8pqd_b')",
+      "Bash(npx tsc *)",
+      "Bash(./node_modules/.bin/tsc --noEmit -p .)"
     ]
   }
 }
