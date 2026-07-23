@@ -13,7 +13,7 @@ import { Progress } from "@/components/ui/progress";
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import { Sparkles } from "lucide-react";
+import { Sparkles, Pause } from "lucide-react";
 import { extractTopicAggregated } from "@/lib/ai.functions";
 import { getExtractionModelOverride } from "@/features/settings/LLMConfigTab";
 import { estimateCostUsd, formatUsd } from "@/lib/llm-pricing";
@@ -63,7 +63,23 @@ type Addl = {
   source_chunk_ids: string[];
 };
 
-type ExtractionProgress = { done: number; total: number; current_topic: string | null };
+type ExtractionProgress = {
+  done: number;
+  total: number;
+  current_topic: string | null;
+  current_batch?: number;
+  total_batches?: number;
+};
+
+// For a single-topic run `total` stays 1 until the very end (no per-topic granularity to
+// show), so fall back to batch-level progress within that one topic when available.
+function progressPercent(p: ExtractionProgress | null): number {
+  if (!p) return 0;
+  if (p.total <= 1 && p.current_batch && p.total_batches) {
+    return ((p.current_batch - 1) / p.total_batches) * 100;
+  }
+  return (p.done / Math.max(1, p.total)) * 100;
+}
 
 export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
@@ -346,7 +362,7 @@ export function StructuredKnowledgeTab({ projectId }: { projectId: string }) {
 
           {processing && (
             <div className="space-y-1">
-              <Progress value={progress ? (progress.done / Math.max(1, progress.total)) * 100 : 0} />
+              <Progress value={progressPercent(progress)} />
               <p className="text-[10px] text-muted-foreground">
                 {progress
                   ? `${progress.done}/${progress.total} tópicos${progress.current_topic ? ` · processando: ${progress.current_topic}` : ""}`
@@ -449,17 +465,42 @@ function TopicEditor({
   const [addlText, setAddlText] = useState("");
   const [saving, setSaving] = useState(false);
   const [reextracting, setReextracting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [jsonOpen, setJsonOpen] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
 
   const coreFilled = dpds.filter((d) => fields.some((f) => f.field_name === d.field_name && f.field_origin === "core" && f.field_value != null && f.field_value !== "")).length;
+
+  // Polls the in-flight extraction_runs row while this topic's re-extraction is running —
+  // only one extraction can run per project at a time, so "latest run" reliably identifies
+  // it once the server has created the row. Also gives us the run id to cancel.
+  const { data: reextractRun } = useQuery({
+    queryKey: ["sk_topic_extraction_progress", projectId, slug],
+    enabled: reextracting,
+    refetchInterval: reextracting ? 1200 : false,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("extraction_runs")
+        .select("id, status, stats")
+        .eq("project_id", projectId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw error;
+      return data as { id: string; status: string; stats: { progress?: ExtractionProgress } | null } | null;
+    },
+  });
+  const reextractProgress = reextractRun?.stats?.progress ?? null;
+  const reextractCancelled = reextractRun?.status === "cancelled";
 
   async function reextract() {
     setReextracting(true);
     try {
       const res = await extractTopicAggregated({ data: { projectId, topicSlug: slug, modelOverride: getExtractionModelOverride(projectId) } });
       const r = res.topics[0];
-      if (r) {
+      if (res.cancelled) {
+        toast.message(r ? `Extração cancelada · ${r.core_filled}/${r.core_total} campos preenchidos antes de parar` : "Extração cancelada");
+      } else if (r) {
         toast.success(`Re-extraído: ${r.core_filled}/${r.core_total} campos · ${r.chunks_used} chunks · +${r.additional_info_chars} chars de narrativa`);
       } else {
         toast.message("Re-extração concluída");
@@ -470,6 +511,19 @@ function TopicEditor({
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
       setReextracting(false);
+    }
+  }
+
+  async function cancelReextract() {
+    if (!reextractRun?.id) return;
+    setCancelling(true);
+    try {
+      await supabase.from("extraction_runs").update({ status: "cancelled" } as never).eq("id", reextractRun.id);
+      toast.message("Cancelamento solicitado — aguardando o processo parar…");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -616,11 +670,22 @@ function TopicEditor({
               Core Information são os campos oficiais. Informações adicionais é texto livre que complementa a base.
             </p>
           </div>
-          <div className="flex flex-col items-end gap-1">
-            <div className="flex gap-1">
+          <div className="flex w-64 flex-col items-end gap-1">
+            <div className="flex flex-wrap justify-end gap-1">
               <Button variant="default" size="sm" onClick={reextract} disabled={reextracting}>
                 {reextracting ? "Re-extraindo…" : "Re-extrair tópico"}
               </Button>
+              {reextracting && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={cancelReextract}
+                  disabled={cancelling || reextractCancelled || !reextractRun?.id}
+                >
+                  <Pause className="mr-1 size-3" />
+                  {cancelling || reextractCancelled ? "Cancelando…" : "Cancelar"}
+                </Button>
+              )}
               <Button variant="outline" size="sm" onClick={() => setSourcesOpen(true)}>
                 Source Chunks ({allSourceChunks.length})
               </Button>
@@ -630,6 +695,18 @@ function TopicEditor({
               Custo estimado: <strong>{formatUsd(extractionCost)}</strong>
               <span className="ml-1 opacity-70">· {extractionChunks} chunk{extractionChunks === 1 ? "" : "s"} · {costModel}</span>
             </span>
+            {reextracting && (
+              <div className="w-full space-y-1">
+                <Progress value={progressPercent(reextractProgress)} />
+                <p className="text-[10px] text-muted-foreground">
+                  {reextractCancelled
+                    ? "Parando…"
+                    : reextractProgress?.total_batches
+                      ? `Lote ${reextractProgress.current_batch}/${reextractProgress.total_batches}`
+                      : "Iniciando…"}
+                </p>
+              </div>
+            )}
           </div>
 
         </CardHeader>

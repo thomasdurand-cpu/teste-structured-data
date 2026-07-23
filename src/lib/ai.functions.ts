@@ -63,6 +63,15 @@ async function guardConcurrentExtraction(sb: ReturnType<typeof getSb>, projectId
   }).eq("id", active.id);
 }
 
+// The UI lets the user request cancellation by flipping this row's status directly
+// (RLS-open table, same pattern already used for progress polling). Extraction itself
+// is a single long-running server call with no other cancellation channel, so we poll
+// our own run row between topics/batches and stop cooperatively once we see it.
+async function isRunCancelled(sb: ReturnType<typeof getSb>, runId: string): Promise<boolean> {
+  const { data } = await sb.from("extraction_runs").select("status").eq("id", runId).maybeSingle();
+  return data?.status === "cancelled";
+}
+
 type GatewayResult = {
   content: string;
   inputTokens: number;
@@ -1101,7 +1110,13 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
       output_tokens: number;
     }> = [];
 
+    let cancelled = false;
     for (const topic of topics) {
+      // Checked before touching this topic's data at all — if the user cancelled, leave
+      // this (and every remaining) topic exactly as it was rather than wiping it for
+      // work that will never run.
+      if (await isRunCancelled(sb, run.id)) { cancelled = true; break; }
+
       // Progress feedback for the UI: it polls this run row directly via Supabase (RLS-open)
       // while extraction is in flight, since this whole handler is one blocking request/response
       // with no other channel to report intermediate state.
@@ -1174,6 +1189,17 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
       // this is what bounds both token spend and per-call context size.
       const totalBatches = Math.min(MAX_BATCHES, Math.ceil(classified.length / CHUNK_CAP));
       for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+        // Checked before each batch's LLM call — the finest granularity available, since an
+        // in-flight LLM call itself can't be aborted mid-request. Whatever this topic already
+        // resolved in earlier batches is kept and persisted below, not thrown away.
+        if (await isRunCancelled(sb, run.id)) { cancelled = true; break; }
+        await sb.from("extraction_runs").update({
+          stats: { progress: {
+            done: result.length, total: topics.length, current_topic: topic.slug,
+            current_batch: batchIdx + 1, total_batches: totalBatches,
+          } } as never,
+        }).eq("id", run.id);
+
         const useChunks = classified.slice(batchIdx * CHUNK_CAP, (batchIdx + 1) * CHUNK_CAP);
         if (useChunks.length === 0) break;
         usedChunkIds.push(...useChunks.map((c) => c.id));
@@ -1338,15 +1364,17 @@ export const extractTopicAggregated = createServerFn({ method: "POST" })
         input_tokens: inT,
         output_tokens: outT,
       });
+
+      if (cancelled) break;
     }
 
     await sb.from("extraction_runs").update({
-      status: "done",
+      status: cancelled ? "cancelled" : "done",
       finished_at: new Date().toISOString(),
       stats: { progress: { done: result.length, total: topics.length, current_topic: null }, topics: result } as never,
     }).eq("id", run.id);
 
-    return { topics: result };
+    return { topics: result, cancelled };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await sb.from("extraction_runs").update({
