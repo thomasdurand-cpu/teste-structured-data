@@ -1,13 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
-import {
-  callProvider as callProviderRaw,
-  listModels as listModelsRaw,
-  type Provider,
-  type LlmConfig as BaseLlmConfig,
-  type ModelInfo,
-} from "./llm-provider-call";
 
 function getSb() {
   return createClient<Database>(
@@ -17,6 +10,8 @@ function getSb() {
   );
 }
 
+type Provider = "lovable" | "openai" | "anthropic" | "google" | "openrouter" | "custom";
+
 type CallResult = {
   answer: string;
   inputTokens: number | null;
@@ -24,7 +19,15 @@ type CallResult = {
   latencyMs: number;
 };
 
-type LlmConfig = BaseLlmConfig & { system?: string };
+type LlmConfig = {
+  provider: Provider;
+  apiKey?: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  system?: string;
+  endpoint?: string;
+};
 
 const DEFAULT_SYSTEM =
   "Você é um assistente de hotel. Responda APENAS com base no contexto fornecido. Se a informação não estiver no contexto, diga que não encontrou. Não invente.";
@@ -33,14 +36,127 @@ function buildUserPrompt(question: string, context: string) {
   return `CONTEXTO:\n${context}\n\nPERGUNTA:\n${question}`;
 }
 
-async function callProvider(cfg: LlmConfig, userPrompt: string): Promise<CallResult> {
-  const res = await callProviderRaw(cfg, { system: cfg.system || DEFAULT_SYSTEM, user: userPrompt });
-  return {
-    answer: res.content,
-    inputTokens: res.inputTokens,
-    outputTokens: res.outputTokens,
-    latencyMs: res.latency,
+async function callOpenAICompat(cfg: LlmConfig, userPrompt: string, endpoint: string, headers: Record<string, string>): Promise<CallResult> {
+  const t0 = Date.now();
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify({
+      model: cfg.model,
+      temperature: cfg.temperature,
+      max_tokens: cfg.maxTokens,
+      messages: [
+        { role: "system", content: cfg.system || DEFAULT_SYSTEM },
+        { role: "user", content: userPrompt },
+      ],
+    }),
+  });
+  const latency = Date.now() - t0;
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Provider ${res.status}: ${text.slice(0, 400)}`);
+  const json = JSON.parse(text) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
+  return {
+    answer: json.choices?.[0]?.message?.content ?? "",
+    inputTokens: json.usage?.prompt_tokens ?? null,
+    outputTokens: json.usage?.completion_tokens ?? null,
+    latencyMs: latency,
+  };
+}
+
+async function callAnthropic(cfg: LlmConfig, userPrompt: string): Promise<CallResult> {
+  if (!cfg.apiKey) throw new Error("API key obrigatória para Anthropic");
+  const t0 = Date.now();
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": cfg.apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: cfg.model,
+      max_tokens: cfg.maxTokens,
+      temperature: cfg.temperature,
+      system: cfg.system || DEFAULT_SYSTEM,
+      messages: [{ role: "user", content: userPrompt }],
+    }),
+  });
+  const latency = Date.now() - t0;
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Anthropic ${res.status}: ${text.slice(0, 400)}`);
+  const json = JSON.parse(text) as {
+    content?: Array<{ text?: string }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  };
+  return {
+    answer: (json.content ?? []).map((c) => c.text ?? "").join(""),
+    inputTokens: json.usage?.input_tokens ?? null,
+    outputTokens: json.usage?.output_tokens ?? null,
+    latencyMs: latency,
+  };
+}
+
+async function callGoogle(cfg: LlmConfig, userPrompt: string): Promise<CallResult> {
+  if (!cfg.apiKey) throw new Error("API key obrigatória para Google");
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cfg.model)}:generateContent?key=${encodeURIComponent(cfg.apiKey)}`;
+  const t0 = Date.now();
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: cfg.system || DEFAULT_SYSTEM }] },
+      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
+      generationConfig: { temperature: cfg.temperature, maxOutputTokens: cfg.maxTokens },
+    }),
+  });
+  const latency = Date.now() - t0;
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Google ${res.status}: ${text.slice(0, 400)}`);
+  const json = JSON.parse(text) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  };
+  return {
+    answer: (json.candidates?.[0]?.content?.parts ?? []).map((p) => p.text ?? "").join(""),
+    inputTokens: json.usageMetadata?.promptTokenCount ?? null,
+    outputTokens: json.usageMetadata?.candidatesTokenCount ?? null,
+    latencyMs: latency,
+  };
+}
+
+async function callProvider(cfg: LlmConfig, userPrompt: string): Promise<CallResult> {
+  switch (cfg.provider) {
+    case "lovable": {
+      const apiKey = process.env.LOVABLE_API_KEY;
+      if (!apiKey) throw new Error("LOVABLE_API_KEY não configurada no servidor.");
+      return callOpenAICompat(cfg, userPrompt, "https://ai.gateway.lovable.dev/v1/chat/completions", {
+        "Lovable-API-Key": apiKey,
+      });
+    }
+    case "openai":
+      if (!cfg.apiKey) throw new Error("API key obrigatória para OpenAI");
+      return callOpenAICompat(cfg, userPrompt, "https://api.openai.com/v1/chat/completions", {
+        Authorization: `Bearer ${cfg.apiKey}`,
+      });
+    case "openrouter":
+      if (!cfg.apiKey) throw new Error("API key obrigatória para OpenRouter");
+      return callOpenAICompat(cfg, userPrompt, "https://openrouter.ai/api/v1/chat/completions", {
+        Authorization: `Bearer ${cfg.apiKey}`,
+      });
+    case "custom": {
+      if (!cfg.endpoint) throw new Error("Endpoint obrigatório para Custom");
+      const headers: Record<string, string> = {};
+      if (cfg.apiKey) headers["Authorization"] = `Bearer ${cfg.apiKey}`;
+      return callOpenAICompat(cfg, userPrompt, cfg.endpoint, headers);
+    }
+    case "anthropic":
+      return callAnthropic(cfg, userPrompt);
+    case "google":
+      return callGoogle(cfg, userPrompt);
+  }
 }
 
 // ===== Context builders =====
@@ -177,15 +293,6 @@ async function buildStructuredContext(
 }
 
 // ===== Public server fn =====
-
-/**
- * Lists models available for a provider/API key so the settings UI can offer
- * a dropdown instead of a free-text field. Runs server-side because the
- * provider APIs (OpenAI, Anthropic, Google) don't allow direct browser calls.
- */
-export const listModels = createServerFn({ method: "POST" })
-  .inputValidator((input: { provider: Provider; apiKey?: string }) => input)
-  .handler(async ({ data }): Promise<ModelInfo[]> => listModelsRaw(data.provider, data.apiKey));
 
 export const runCompare = createServerFn({ method: "POST" })
   .inputValidator((input: {

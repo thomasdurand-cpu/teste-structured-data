@@ -82,7 +82,7 @@ const TOPIC_EMOJI: Record<string, string> = {
   wifi: "📶",
 };
 
-export function DataPointsTab({ projectId }: { projectId: string }) {
+export function DataPointsTab() {
   const qc = useQueryClient();
   const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
   const [preview, setPreview] = useState<PreviewRow[] | null>(null);
@@ -91,12 +91,11 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const { data: topics } = useQuery({
-    queryKey: ["topic_definitions", projectId],
+    queryKey: ["topic_definitions"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("topic_definitions")
         .select("*")
-        .eq("project_id", projectId)
         .order("name");
       if (error) throw error;
       return data as TopicRow[];
@@ -104,12 +103,11 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
   });
 
   const { data: dps } = useQuery({
-    queryKey: ["data_point_definitions", projectId],
+    queryKey: ["data_point_definitions"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("data_point_definitions")
         .select("*")
-        .eq("project_id", projectId)
         .order("field_name");
       if (error) throw error;
       return data as Dpd[];
@@ -123,19 +121,15 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
   );
 
   function refresh() {
-    qc.invalidateQueries({ queryKey: ["data_point_definitions", projectId] });
-    qc.invalidateQueries({ queryKey: ["topic_definitions", projectId] });
+    qc.invalidateQueries({ queryKey: ["data_point_definitions"] });
   }
 
   async function handleFile(file: File) {
     try {
       const text = await file.text();
       let rows: PreviewRow[] = [];
-      const lowerName = file.name.toLowerCase();
-      if (lowerName.endsWith(".json")) {
+      if (file.name.toLowerCase().endsWith(".json")) {
         rows = parseJsonInput(text);
-      } else if (lowerName.endsWith(".ts")) {
-        rows = parseTsInput(text);
       } else {
         rows = parseCsvInput(text);
       }
@@ -157,63 +151,16 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
   async function importPreview() {
     if (!preview || !topics) return;
     setImporting(true);
-
     const topicBySlug = new Map(topics.map((t) => [t.slug, t] as const));
     const topicByName = new Map(topics.map((t) => [t.name.toLowerCase(), t] as const));
-
-    // Collect topics that need to be created (marked as "novo")
-    const newTopicsToCreate: Record<string, { slug: string; name: string }> = {};
-    for (const r of preview) {
-      const existing =
-        topicBySlug.get(r.topic_slug) ??
-        (r.topic_name ? topicByName.get(r.topic_name.toLowerCase()) : undefined);
-      if (!existing) {
-        newTopicsToCreate[r.topic_slug] = {
-          slug: r.topic_slug,
-          name: r.topic_name ?? r.topic_slug,
-        };
-      }
-    }
-
-    // Create the missing topics (scoped to this project)
-    const newTopicMap = new Map<string, string>(); // slug -> id
-    if (Object.keys(newTopicsToCreate).length > 0) {
-      const { data: created, error: topicErr } = await supabase
-        .from("topic_definitions")
-        .insert(Object.values(newTopicsToCreate).map((t) => ({ ...t, project_id: projectId })))
-        .select("id, slug");
-      if (topicErr) {
-        setImporting(false);
-        toast.error("Erro ao criar tópico: " + topicErr.message);
-        return;
-      }
-      for (const t of created ?? []) {
-        newTopicMap.set(t.slug, t.id);
-      }
-      // Ativa os novos tópicos imediatamente neste projeto (sem precisar do passo manual em Upload).
-      if (created && created.length > 0) {
-        await supabase.from("topics").insert(
-          created.map((t) => ({ project_id: projectId, topic_definition_id: t.id })) as never,
-        );
-      }
-    }
-
-    // Merge newly created topics with existing ones
-    const resolveTopicId = (r: PreviewRow): string | null => {
-      const existing =
-        topicBySlug.get(r.topic_slug) ??
-        (r.topic_name ? topicByName.get(r.topic_name.toLowerCase()) : undefined);
-      if (existing) return existing.id;
-      return newTopicMap.get(r.topic_slug) ?? null;
-    };
-
     const payload = preview
       .map((r) => {
-        const topicId = resolveTopicId(r);
-        if (!topicId) return null;
+        const topic =
+          topicBySlug.get(r.topic_slug) ??
+          (r.topic_name ? topicByName.get(r.topic_name.toLowerCase()) : undefined);
+        if (!topic) return null;
         return {
-          topic_definition_id: topicId,
-          project_id: projectId,
+          topic_definition_id: topic.id,
           field_name: r.field_name,
           field_label: r.field_label,
           field_type: r.field_type,
@@ -230,7 +177,7 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
 
     if (payload.length === 0) {
       setImporting(false);
-      toast.error("Nenhum campo válido encontrado para importar");
+      toast.error("Nenhum tópico correspondente encontrado para os campos importados");
       return;
     }
 
@@ -243,11 +190,8 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
       toast.error(error.message);
       return;
     }
-    const newTopicCount = Object.keys(newTopicsToCreate).length;
     toast.success(
-      `Importados ${payload.length} campo(s)` +
-        (newTopicCount ? ` · ${newTopicCount} tópico(s) criado(s)` : "") +
-        (skipped ? ` · ${skipped} ignorado(s)` : ""),
+      `Importados ${payload.length} campo(s)${skipped ? ` · ${skipped} ignorado(s) por tópico inexistente` : ""}`,
     );
     setPreview(null);
     setPreviewTopicSlug(null);
@@ -275,8 +219,8 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
           <div>
             <CardTitle className="text-base">Importar Data Points</CardTitle>
             <p className="mt-1 text-xs text-muted-foreground">
-              Suba um <code>.json</code>, <code>.csv</code> ou <code>.ts</code> com campos para adicionar em lote.
-              Colunas/chaves esperadas: <code>topic_slug</code>, <code>field_name</code>,{" "}
+              Suba um <code>.json</code> ou <code>.csv</code> com campos para adicionar em lote.
+              Colunas esperadas: <code>topic_slug</code>, <code>field_name</code>,{" "}
               <code>field_label</code>, <code>field_type</code>, <code>description</code>{" "}
               (opcional).
             </p>
@@ -285,7 +229,7 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
             <input
               ref={fileRef}
               type="file"
-              accept=".json,.csv,.ts,application/json,text/csv"
+              accept=".json,.csv,application/json,text/csv"
               className="hidden"
               onChange={(e) => {
                 const f = e.target.files?.[0];
@@ -337,8 +281,9 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
                     <button
                       key={t.slug}
                       onClick={() => setPreviewTopicSlug(t.slug)}
-                      className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors ${active ? "bg-accent text-accent-foreground" : "hover:bg-muted"
-                        }`}
+                      className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
+                        active ? "bg-accent text-accent-foreground" : "hover:bg-muted"
+                      }`}
                     >
                       <span className="flex items-center gap-2">
                         <span>{TOPIC_EMOJI[t.slug] ?? "📁"}</span>
@@ -408,8 +353,9 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
                 <button
                   key={t.id}
                   onClick={() => setSelectedTopicId(t.id)}
-                  className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors ${active ? "bg-accent text-accent-foreground" : "hover:bg-muted"
-                    }`}
+                  className={`flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm transition-colors ${
+                    active ? "bg-accent text-accent-foreground" : "hover:bg-muted"
+                  }`}
                 >
                   <span className="flex items-center gap-2">
                     <span>{TOPIC_EMOJI[t.slug] ?? "📁"}</span>
@@ -439,7 +385,6 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
             {currentTopicId && (
               <EditDialog
                 topicId={currentTopicId}
-                projectId={projectId}
                 onSaved={refresh}
                 trigger={
                   <Button size="sm">
@@ -492,7 +437,6 @@ export function DataPointsTab({ projectId }: { projectId: string }) {
                         <div className="flex justify-end gap-1">
                           <EditDialog
                             topicId={currentTopicId!}
-                            projectId={projectId}
                             existing={d}
                             onSaved={refresh}
                             trigger={
@@ -578,159 +522,6 @@ function normalizeRow(raw: Record<string, unknown>): PreviewRow | null {
   };
 }
 
-function findMatchingBracket(text: string, startIdx: number): number {
-  const startChar = text[startIdx];
-  const endChar = startChar === "[" ? "]" : "}";
-  let depth = 0;
-  let inString: string | null = null;
-  let escaped = false;
-
-  for (let i = startIdx; i < text.length; i++) {
-    const c = text[i];
-
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-
-    if (c === "\\") {
-      escaped = true;
-      continue;
-    }
-
-    if (inString) {
-      if (c === inString) {
-        inString = null;
-      }
-      continue;
-    }
-
-    if (c === '"' || c === "'" || c === "`") {
-      inString = c;
-      continue;
-    }
-
-    if (c === startChar) {
-      depth++;
-    } else if (c === endChar) {
-      depth--;
-      if (depth === 0) {
-        return i;
-      }
-    }
-  }
-  return -1;
-}
-
-function labelize(name: string): string {
-  return name
-    .replace(/([A-Z])/g, " $1")
-    .replace(/_/g, " ")
-    .trim()
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function parseTsTypeDefinition(text: string): PreviewRow[] {
-  const rows: PreviewRow[] = [];
-  const declRegex = /(?:export\s+)?(?:type|interface)\s+(\w+)\s*=?\s*\{/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = declRegex.exec(text)) !== null) {
-    const typeName = match[1];
-    const startIdx = match.index + match[0].length - 1; // index of '{'
-    const endIdx = findMatchingBracket(text, startIdx);
-    if (endIdx === -1) continue;
-
-    const block = text.slice(startIdx + 1, endIdx);
-    const propRegex = /^\s*(\w+)(\?)?\s*:\s*([^;/\n]+)/gm;
-    let propMatch: RegExpExecArray | null;
-
-    const topic_slug = slugify(labelize(typeName));
-    const topic_name = labelize(typeName);
-
-    while ((propMatch = propRegex.exec(block)) !== null) {
-      const fieldName = propMatch[1];
-      const isOptional = propMatch[2] === "?";
-      const tsType = propMatch[3].trim();
-
-      let field_type: FieldType = "text";
-      if (tsType === "boolean") {
-        field_type = "boolean";
-      } else if (tsType === "number") {
-        field_type = "number";
-      } else if (tsType.includes("|") && (tsType.includes('"') || tsType.includes("'"))) {
-        field_type = "enum";
-      }
-
-      rows.push({
-        topic_slug,
-        topic_name,
-        field_name: slugify(labelize(fieldName)),
-        field_label: labelize(fieldName),
-        field_type,
-        description: `Imported from TS type ${typeName}.${fieldName}`,
-      });
-    }
-  }
-
-  return rows;
-}
-
-function parseTsInput(text: string): PreviewRow[] {
-  // Check if it's a TS type/interface definition file
-  const isTypeDefinition = /(?:type|interface)\s+\w+/.test(text);
-  if (isTypeDefinition) {
-    try {
-      return parseTsTypeDefinition(text);
-    } catch (e) {
-      console.error("Failed to parse TS type definition", e);
-      throw new Error("Erro ao interpretar as definições de tipo do arquivo .ts: " + (e instanceof Error ? e.message : String(e)));
-    }
-  }
-
-  // Fallback to evaluating JS array/object literal block
-  let cleaned = text.replace(/\/\/.*$/gm, "");
-  cleaned = cleaned.replace(/\/\*[\s\S]*?\*\//g, "");
-  cleaned = cleaned.replace(/import\s+[\s\S]*?from\s+['"].*?['"];?/g, "");
-
-  const startIdx = cleaned.search(/[\[\{]/);
-  if (startIdx === -1) return [];
-
-  const endIdx = findMatchingBracket(cleaned, startIdx);
-  if (endIdx === -1) return [];
-
-  let literal = cleaned.slice(startIdx, endIdx + 1);
-
-  try {
-    literal = literal.replace(/\s+as\s+[^,}\]]+/g, "");
-
-    const obj = new Function(`return ${literal}`)();
-    const rows: PreviewRow[] = [];
-    if (Array.isArray(obj)) {
-      for (const item of obj) {
-        if (item && typeof item === "object") {
-          const r = normalizeRow(item as Record<string, unknown>);
-          if (r) rows.push(r);
-        }
-      }
-    } else if (obj && typeof obj === "object") {
-      for (const [topic_slug, arr] of Object.entries(obj)) {
-        if (!Array.isArray(arr)) continue;
-        for (const item of arr) {
-          if (item && typeof item === "object") {
-            const r = normalizeRow({ topic_slug, ...(item as Record<string, unknown>) });
-            if (r) rows.push(r);
-          }
-        }
-      }
-    }
-    return rows;
-  } catch (e) {
-    console.error("Failed to parse TS input", e);
-    throw new Error("Formato do arquivo .ts inválido ou não pôde ser avaliado como objeto/array: " + (e instanceof Error ? e.message : String(e)));
-  }
-}
-
 function parseJsonInput(text: string): PreviewRow[] {
   const data = JSON.parse(text);
   const rows: PreviewRow[] = [];
@@ -793,13 +584,11 @@ function parseCsvInput(text: string): PreviewRow[] {
 
 function EditDialog({
   topicId,
-  projectId,
   existing,
   onSaved,
   trigger,
 }: {
   topicId: string;
-  projectId: string;
   existing?: Dpd;
   onSaved: () => void;
   trigger: React.ReactNode;
@@ -822,7 +611,6 @@ function EditDialog({
     setSaving(true);
     const payload = {
       topic_definition_id: topicId,
-      project_id: projectId,
       field_name: fieldName.trim(),
       field_label: fieldLabel.trim(),
       field_type: fieldType,
@@ -836,9 +624,9 @@ function EditDialog({
     };
     const { error } = existing
       ? await supabase
-        .from("data_point_definitions")
-        .update(payload as never)
-        .eq("id", existing.id)
+          .from("data_point_definitions")
+          .update(payload as never)
+          .eq("id", existing.id)
       : await supabase.from("data_point_definitions").insert(payload as never);
     setSaving(false);
     if (error) {

@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button";
 type Search = { tab?: string };
 
 export const Route = createFileRoute("/projects/$projectId")({
-  head: () => ({ meta: [{ title: "Project — teste" }] }),
+  head: () => ({ meta: [{ title: "Project — Hybrid KB Lab" }] }),
   validateSearch: (s: Record<string, unknown>): Search => ({
     tab: typeof s.tab === "string" ? s.tab : undefined,
   }),

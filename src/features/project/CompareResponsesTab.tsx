@@ -92,11 +92,11 @@ export function CompareResponsesTab({ projectId }: { projectId: string }) {
   }, [projectId]);
 
   function validateConfig(c: Config | null): string | null {
-    if (!c) return "Configure o modelo em Settings → Answer Configuration.";
+    if (!c) return "Configure o modelo em Settings → LLM Config.";
     const needs = PROVIDER_NEEDS[c.provider];
-    if (needs.needsKey && !c.apiKey.trim()) return "API Key obrigatória para este provider (Settings → Answer Configuration).";
-    if (needs.needsEndpoint && !c.endpoint.trim()) return "Endpoint obrigatório para Custom (Settings → Answer Configuration).";
-    if (!c.model.trim()) return "Model não configurado (Settings → Answer Configuration).";
+    if (needs.needsKey && !c.apiKey.trim()) return "API Key obrigatória para este provider (Settings → LLM Config).";
+    if (needs.needsEndpoint && !c.endpoint.trim()) return "Endpoint obrigatório para Custom (Settings → LLM Config).";
+    if (!c.model.trim()) return "Model não configurado (Settings → LLM Config).";
     return null;
   }
 

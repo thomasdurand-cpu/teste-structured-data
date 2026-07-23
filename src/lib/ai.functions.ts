@@ -2,17 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@/integrations/supabase/types";
 import { z } from "zod";
-import { tryDeterministic, type DpdLite } from "./deterministic-extractors";
-import { callProvider, type Provider, type LlmConfig } from "./llm-provider-call";
-
-type ModelOverride = {
-  provider?: Provider;
-  apiKey?: string;
-  endpoint?: string;
-  model?: string;
-  temperature?: number;
-  maxTokens?: number;
-};
+import { tryDeterministic, extractTimeRange, type DpdLite } from "./deterministic-extractors";
 
 
 // --------- Pricing table (rough; per 1M tokens, USD) ----------
@@ -24,6 +14,7 @@ const PRICING: Record<string, { in: number; out: number }> = {
   "google/gemini-2.5-pro": { in: 1.25, out: 5 },
   "openai/gpt-5-mini": { in: 0.25, out: 2 },
   "openai/gpt-5-nano": { in: 0.05, out: 0.4 },
+  "deepseek/deepseek-v4-flash": { in: 0.098, out: 0.196 },
 };
 
 function estimateCost(model: string, inT: number, outT: number) {
@@ -47,9 +38,6 @@ type GatewayResult = {
 };
 
 async function callGateway(opts: {
-  provider?: Provider;
-  apiKey?: string;
-  endpoint?: string;
   model: string;
   temperature: number;
   maxTokens: number;
@@ -57,15 +45,45 @@ async function callGateway(opts: {
   user: string;
   jsonMode?: boolean;
 }): Promise<GatewayResult> {
-  const cfg: LlmConfig = {
-    provider: opts.provider ?? "lovable",
-    apiKey: opts.apiKey,
-    endpoint: opts.endpoint,
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY not configured");
+
+  const messages: Array<{ role: string; content: string }> = [];
+  if (opts.system) messages.push({ role: "system", content: opts.system });
+  messages.push({ role: "user", content: opts.user });
+
+  const body: Record<string, unknown> = {
     model: opts.model,
+    messages,
     temperature: opts.temperature,
-    maxTokens: opts.maxTokens,
+    max_tokens: opts.maxTokens,
   };
-  return callProvider(cfg, { system: opts.system, user: opts.user, jsonMode: opts.jsonMode });
+  if (opts.jsonMode) body.response_format = { type: "json_object" };
+
+  const t0 = Date.now();
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", "Authorization": `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+  const latency = Date.now() - t0;
+
+  if (!res.ok) {
+    const text = await res.text();
+    if (res.status === 429) throw new Error("Rate limit excedido. Tente novamente em instantes.");
+    if (res.status === 402) throw new Error("Créditos insuficientes na conta OpenRouter.");
+    throw new Error(`Gateway error ${res.status}: ${text.slice(0, 300)}`);
+  }
+  const json = (await res.json()) as {
+    choices: Array<{ message: { content: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
+  };
+  return {
+    content: json.choices[0]?.message?.content ?? "",
+    inputTokens: json.usage?.prompt_tokens ?? 0,
+    outputTokens: json.usage?.completion_tokens ?? 0,
+    latency,
+  };
 }
 
 function parseJsonLenient(text: string): unknown {
@@ -110,14 +128,12 @@ async function classifyChunkWithLLM(
   topics: TopicLite[],
   model: string,
   temperature: number,
-  override?: ModelOverride,
 ): Promise<{ slugs: string[]; inT: number; outT: number; latency: number; cost: number }> {
   const list = topics.map((t) => `- ${t.slug}: ${t.description || t.name}`).join("\n");
   const sys =
     "Você classifica trechos de texto em tópicos hoteleiros. Responda EXCLUSIVAMENTE com JSON {\"topics\":[\"slug1\",\"slug2\"]}. Use somente os slugs listados. Se nenhum tópico se aplica, devolva [].";
   const user = `TÓPICOS DISPONÍVEIS:\n${list}\n\nTEXTO:\n"""${chunk.slice(0, 1200)}"""`;
   const res = await callGateway({
-    provider: override?.provider, apiKey: override?.apiKey, endpoint: override?.endpoint,
     model, temperature, maxTokens: 200, system: sys, user, jsonMode: true,
   });
   let slugs: string[] = [];
@@ -136,6 +152,47 @@ async function classifyChunkWithLLM(
     latency: res.latency,
     cost: estimateCost(model, res.inputTokens, res.outputTokens),
   };
+}
+
+// Batch version: classifies many chunks against the full topic list in a single call.
+// Used to replace plain word-matching (aliasMatch) with real semantic classification —
+// aliasMatch produces heavy false positives for generic alias words (e.g. "spa" matching
+// every page because the hotel's own name contains it). Results are cached by the caller
+// (raw_chunks.metadata) so this only runs once per chunk, ever.
+async function classifyChunksBatchLLM(
+  items: Array<{ id: string; content: string }>,
+  topics: TopicLite[],
+  model: string,
+  temperature: number,
+): Promise<{ result: Map<string, string[]>; inT: number; outT: number }> {
+  const topicList = topics.map((t) => `- ${t.slug}: ${t.description || t.name}`).join("\n");
+  const numbered = items.map((c, i) => `[${i}] ${c.content.slice(0, 500)}`).join("\n---\n");
+  const sys = [
+    "Você classifica trechos de texto de um site de hotel em zero ou mais tópicos, com base no CONTEÚDO REAL do trecho.",
+    "IGNORE menus de navegação, links de rodapé, banners de cookies e menções incidentais (ex: o nome do hotel conter 'Spa' não significa que o trecho é sobre o tópico massagem).",
+    "Responda APENAS com JSON: {\"classifications\":[{\"i\":0,\"topics\":[\"slug1\"]},...]}. Use somente os slugs da lista de tópicos.",
+    "Inclua uma entrada para CADA índice recebido, mesmo que topics seja uma lista vazia.",
+  ].join("\n");
+  const user = `TÓPICOS DISPONÍVEIS:\n${topicList}\n\nTRECHOS (classifique cada um pelo índice):\n${numbered}`;
+  const res = await callGateway({ model, temperature, maxTokens: 2000, system: sys, user, jsonMode: true });
+  const result = new Map<string, string[]>();
+  const validSlugs = new Set(topics.map((t) => t.slug));
+  try {
+    const parsed = parseJsonLenient(res.content) as { classifications?: Array<{ i?: number; topics?: unknown }> };
+    for (const c of parsed.classifications ?? []) {
+      if (typeof c.i !== "number" || !items[c.i]) continue;
+      const slugs = Array.isArray(c.topics)
+        ? c.topics.filter((s): s is string => typeof s === "string" && validSlugs.has(s))
+        : [];
+      result.set(items[c.i].id, slugs);
+    }
+  } catch (e) {
+    console.error("classifyChunksBatchLLM parse failed", e);
+  }
+  // Anything the model didn't return an entry for is cached as "no topics" — otherwise
+  // a chunk with no match would be re-classified (and re-billed) on every future run.
+  for (const it of items) if (!result.has(it.id)) result.set(it.id, []);
+  return { result, inT: res.inputTokens, outT: res.outputTokens };
 }
 
 // ----- Per (chunk, topic) extraction schema -----
@@ -167,6 +224,125 @@ function isEmptyValue(v: unknown): boolean {
   if (typeof v === "string" && v.trim() === "") return true;
   if (Array.isArray(v) && v.length === 0) return true;
   return false;
+}
+
+function canonicalValue(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v).trim().toLowerCase();
+}
+
+function toPlainTextValue(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v).trim();
+}
+
+function normalizeForMatch(s: string): string {
+  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function sentenceSplit(text: string): string[] {
+  return text
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function sentenceMentionsTimePair(sentence: string, start: string, end: string): boolean {
+  const norm = normalizeForMatch(sentence);
+  const [sh, sm] = start.split(":");
+  const [eh, em] = end.split(":");
+  const startHour = String(Number(sh));
+  const endHour = String(Number(eh));
+  const startPatterns = [start, `${startHour}h`, `${startHour}h${sm}`, `${sh}h`, `${sh}h${sm}`].map(normalizeForMatch);
+  const endPatterns = [end, `${endHour}h`, `${endHour}h${em}`, `${eh}h`, `${eh}h${em}`].map(normalizeForMatch);
+  return startPatterns.some((p) => norm.includes(p)) && endPatterns.some((p) => norm.includes(p));
+}
+
+function removeCoreFactsFromAdditionalInfo(
+  text: string,
+  topicSlug: string,
+  coreValues: Map<string, { value: unknown; chunkId: string }>,
+): string {
+  if (!text.trim()) return "";
+  const start = toPlainTextValue(coreValues.get(`${topicSlug}_start_time`)?.value);
+  const end = toPlainTextValue(coreValues.get(`${topicSlug}_end_time`)?.value);
+  const location = toPlainTextValue(coreValues.get(`${topicSlug}_location`)?.value);
+  const price = toPlainTextValue(coreValues.get(`${topicSlug}_price`)?.value);
+  const available = coreValues.get(`${topicSlug}_available`)?.value;
+
+  const cleaned = sentenceSplit(text).filter((sentence) => {
+    const norm = normalizeForMatch(sentence);
+    if (start && end && sentenceMentionsTimePair(sentence, start, end)) return false;
+    if (price && normalizeForMatch(price).length > 1 && norm.includes(normalizeForMatch(price))) return false;
+    if (location) {
+      const loc = normalizeForMatch(location);
+      if (loc.length > 8 && norm.includes(loc)) return false;
+      if (topicSlug === "breakfast" && norm.includes("3o andar") && norm.includes("cafe")) return false;
+    }
+    if (available === true && topicSlug === "breakfast" && /inclus|gratuit|incluid|incluí/.test(norm)) return false;
+    return true;
+  });
+
+  return cleaned.join(" ").trim();
+}
+
+function topicRelevantSnippet(text: string, topic: TopicLite): string {
+  const sentences = sentenceSplit(text);
+  if (sentences.length <= 2) return text;
+
+  const keep = new Set<number>();
+  sentences.forEach((sentence, index) => {
+    if (aliasMatch(sentence, [topic]).length > 0) {
+      keep.add(index);
+      if (index + 1 < sentences.length) keep.add(index + 1);
+    }
+  });
+
+  if (keep.size === 0) return text;
+  return Array.from(keep)
+    .sort((a, b) => a - b)
+    .map((index) => sentences[index])
+    .join(" ")
+    .trim();
+}
+
+// --- Sanity bounds for time-type fields ---
+function timeToMinutes(t: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(t).trim());
+  if (!m) return null;
+  const h = Number(m[1]); const min = Number(m[2]);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  return h * 60 + min;
+}
+// [minHour, maxHour] inclusive — semantics by topic/field name.
+function expectedTimeBounds(topicSlug: string, fieldName: string): [number, number] | null {
+  const n = (fieldName || "").toLowerCase();
+  const s = (topicSlug || "").toLowerCase();
+  if (s.includes("breakfast") || n.includes("breakfast") || n.includes("cafe") || n.includes("café")) return [4, 13];
+  if (n.includes("checkout") || n.includes("check_out") || s.includes("checkout")) return [4, 14];
+  if (n.includes("checkin")  || n.includes("check_in")  || s.includes("checkin"))  return [10, 23];
+  if (n.includes("lunch")    || n.includes("almoco")    || n.includes("almoço"))   return [10, 16];
+  if (n.includes("dinner")   || n.includes("jantar"))                              return [17, 23];
+  if (n.includes("pool")     || s.includes("pool")      || n.includes("piscina"))  return [6, 22];
+  if (n.includes("gym")      || s.includes("gym")       || n.includes("academia")) return [5, 23];
+  if (n.includes("spa")      || s.includes("spa"))                                 return [8, 22];
+  return null;
+}
+function isSaneTime(value: unknown, topicSlug: string, fieldName: string): boolean {
+  if (value == null) return true;
+  const v = typeof value === "string" ? value : (typeof value === "object" ? "" : String(value));
+  const mins = timeToMinutes(v);
+  if (mins == null) return true; // not a HH:MM string — let upstream handle
+  const b = expectedTimeBounds(topicSlug, fieldName);
+  if (!b) return true;
+  const h = mins / 60;
+  return h >= b[0] && h <= b[1];
+}
+function isSaneTimeRange(range: { start: string; end: string }, topicSlug: string, fieldStart: string, fieldEnd: string): boolean {
+  return isSaneTime(range.start, topicSlug, fieldStart) && isSaneTime(range.end, topicSlug, fieldEnd);
 }
 
 async function assertDb<T>(
@@ -211,7 +387,7 @@ export const runExtraction = createServerFn({ method: "POST" })
     projectId: string;
     mode: "dry_run" | "persist";
     chunkIds?: string[];
-    modelOverride?: ModelOverride;
+    modelOverride?: { model?: string; temperature?: number; maxTokens?: number };
   }) => input)
   .handler(async ({ data }) => {
     const sb = getSb();
@@ -228,24 +404,19 @@ export const runExtraction = createServerFn({ method: "POST" })
     const sourceIds = (sources ?? []).map((s) => s.id);
     if (sourceIds.length === 0) throw new Error("Nenhuma fonte bruta. Faça upload de um CSV primeiro.");
 
-    // Settings (por projeto)
+    // Settings
     const { data: settings } = await sb
-      .from("extraction_settings").select("*").eq("project_id", data.projectId).maybeSingle();
-    if (!settings) throw new Error("Configuração de extração ausente. Inicialize-a em Settings → Extraction Pipeline.");
+      .from("extraction_settings").select("*").eq("singleton", true).maybeSingle();
+    if (!settings) throw new Error("Configuração de extração ausente.");
 
     const { data: modelCfg } = await sb
       .from("model_configurations").select("*").eq("active", true)
       .order("created_at", { ascending: false }).limit(1).maybeSingle();
-    if (!modelCfg && !data.modelOverride?.model) {
-      throw new Error(
-        "Nenhum modelo ativo configurado. Configure um modelo em Settings → Model Configurations, " +
-        "ou defina provider/modelo na aba Extraction Pipeline do projeto.",
-      );
-    }
+    if (!modelCfg) throw new Error("Nenhum modelo ativo configurado.");
 
-    const effModel = data.modelOverride?.model?.trim() || modelCfg!.model_name;
+    const effModel = data.modelOverride?.model?.trim() || modelCfg.model_name;
     const effTemp = data.modelOverride?.temperature ?? Number(settings.temperature);
-    const effMaxTokens = data.modelOverride?.maxTokens ?? modelCfg?.max_tokens ?? 2048;
+    const effMaxTokens = data.modelOverride?.maxTokens ?? modelCfg.max_tokens;
     const unifiedPrompt = (settings as { unified_prompt?: string | null }).unified_prompt?.trim()
       || `${settings.system_prompt ?? ""}\n\n${settings.extraction_prompt ?? ""}`.trim();
 
@@ -257,9 +428,7 @@ export const runExtraction = createServerFn({ method: "POST" })
     }
     const { data: chunksRaw } = await chunkQuery;
     const allChunks = chunksRaw ?? [];
-    // Process every available chunk — Process Knowledge is the sole re-extraction entry point
-    // now, so it must actually cover the whole active source, not a "settings.max_chunks" sample.
-    const chunks = allChunks;
+    const chunks = data.chunkIds && data.chunkIds.length > 0 ? allChunks : allChunks.slice(0, settings.max_chunks);
 
     if (chunks.length === 0) throw new Error("Nenhum chunk encontrado.");
 
@@ -283,19 +452,6 @@ export const runExtraction = createServerFn({ method: "POST" })
     });
     if (topics.length === 0) throw new Error("Nenhum tópico ativo. Ative tópicos na aba Topics.");
     const topicBySlug = new Map(topics.map((t) => [t.slug, t]));
-
-    // Persist mode is a full reset+rebuild: wipe whatever structured knowledge already exists
-    // for this project's topics BEFORE extracting, so the result reflects ONLY the currently
-    // active source(s) — not a merge with data left over from a source that was since deleted.
-    if (data.mode === "persist") {
-      const topicIds = topics.map((t) => t.topicId);
-      if (topicIds.length > 0) {
-        await sb.from("knowledge_fields").delete().in("topic_id", topicIds);
-        await sb.from("additional_info").delete().in("topic_id", topicIds);
-      }
-      await sb.from("knowledge_candidates").delete().eq("project_id", data.projectId);
-      await sb.from("knowledge_conflicts").delete().eq("project_id", data.projectId);
-    }
 
     // Data point definitions (only for active definitions)
     const defIds = topics.map((t) => t.defId);
@@ -330,7 +486,7 @@ export const runExtraction = createServerFn({ method: "POST" })
         project_id: data.projectId,
         raw_source_ids: sourceIds,
         mode: data.mode,
-        model_configuration_id: modelCfg?.id ?? null,
+        model_configuration_id: modelCfg.id,
         status: "running",
         started_at: new Date().toISOString(),
       })
@@ -383,7 +539,7 @@ export const runExtraction = createServerFn({ method: "POST" })
         let via: "alias" | "llm" | "none" = "alias";
         if (matched.length === 0) {
           // Step 2: LLM classification
-          const c = await classifyChunkWithLLM(chunk.content, topics, effModel, effTemp, data.modelOverride);
+          const c = await classifyChunkWithLLM(chunk.content, topics, effModel, effTemp);
           totalIn += c.inT; totalOut += c.outT; totalCost += c.cost; totalLatency += c.latency;
           await sb.from("llm_calls").insert({
             prompt_type: "classify",
@@ -454,18 +610,10 @@ export const runExtraction = createServerFn({ method: "POST" })
             chunk: chunk.content,
           });
 
-          // A fixed 2048-token cap truncates the JSON response for topics with many data
-          // points, which fails to parse and silently drops the whole result for that
-          // (chunk, topic) pair — scale the cap with how many fields are still unresolved.
-          const chunkTopicMaxTokens = Math.max(effMaxTokens, unresolvedNeedsLLM.length * 250 + 700);
-
           const res = await callGateway({
-            provider: data.modelOverride?.provider,
-            apiKey: data.modelOverride?.apiKey,
-            endpoint: data.modelOverride?.endpoint,
             model: effModel,
             temperature: effTemp,
-            maxTokens: chunkTopicMaxTokens,
+            maxTokens: effMaxTokens,
             user: userPrompt,
             jsonMode: true,
           });
@@ -691,3 +839,543 @@ export const persistRun = createServerFn({ method: "POST" })
     return { ok: true, hint: "Use runExtraction com mode=persist", projectId: data.projectId };
   });
 
+// =====================================================
+// extractTopicAggregated — re-extracts one (or all) topics
+// by aggregating ALL classified chunks per topic into a single
+// LLM call. Writes results DIRECTLY into knowledge_fields
+// (consolidated) and additional_info (approved), preserving
+// any record marked as user-edited (source_chunk_ids = []).
+// =====================================================
+export const extractTopicAggregated = createServerFn({ method: "POST" })
+  .inputValidator((input: {
+    projectId: string;
+    topicSlug?: string;
+    modelOverride?: { model?: string; temperature?: number; maxTokens?: number };
+  }) => input)
+  .handler(async ({ data }) => {
+    const sb = getSb();
+
+    const { data: project } = await sb
+      .from("projects").select("id, name").eq("id", data.projectId).maybeSingle();
+    if (!project) throw new Error("Projeto não encontrado");
+
+    const { data: sources } = await sb
+      .from("raw_sources").select("id").eq("project_id", data.projectId);
+    const sourceIds = (sources ?? []).map((s) => s.id);
+    if (sourceIds.length === 0) throw new Error("Sem fontes. Faça upload primeiro.");
+
+    const { data: chunksRaw } = await sb
+      .from("raw_chunks").select("id, content, metadata").in("raw_source_id", sourceIds).order("position");
+    const allChunks = chunksRaw ?? [];
+    if (allChunks.length === 0) throw new Error("Nenhum chunk encontrado.");
+
+    // Dedup: scraped multi-page sources repeat verbatim boilerplate (cookie banners,
+    // footers) on every page. Dropping exact duplicates is free (no LLM) and shrinks
+    // both the deterministic pass and the number of LLM batches needed per topic below.
+    const normalizeForDedup = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+    const seenContent = new Set<string>();
+    const dedupedChunks = allChunks.filter((c) => {
+      const key = normalizeForDedup(c.content);
+      if (seenContent.has(key)) return false;
+      seenContent.add(key);
+      return true;
+    });
+
+    // Strip site-wide boilerplate lines (nav menus, footers) that recur verbatim across
+    // many different pages. These cause false-positive alias matches — e.g. a "Spa & Leisure"
+    // nav link makes every page containing that menu "match" the massage topic even when
+    // unrelated — and waste tokens in the LLM prompt. Free (no LLM): a line counts as
+    // boilerplate if it appears, as-is, in enough distinct chunks to be part of the site
+    // template rather than real page content.
+    const MIN_LINE_LEN = 15;
+    const BOILERPLATE_MIN_CHUNKS = Math.max(5, Math.ceil(dedupedChunks.length * 0.03));
+    const lineChunkCount = new Map<string, number>();
+    for (const c of dedupedChunks) {
+      const uniqueLines = new Set(
+        c.content.split("\n").map((l) => l.trim()).filter((l) => l.length >= MIN_LINE_LEN),
+      );
+      for (const line of uniqueLines) {
+        lineChunkCount.set(line, (lineChunkCount.get(line) ?? 0) + 1);
+      }
+    }
+    const boilerplateLines = new Set(
+      Array.from(lineChunkCount.entries())
+        .filter(([, count]) => count >= BOILERPLATE_MIN_CHUNKS)
+        .map(([line]) => line),
+    );
+    const chunks = boilerplateLines.size === 0
+      ? dedupedChunks
+      : dedupedChunks.map((c) => ({
+          ...c,
+          content: c.content.split("\n").filter((l) => !boilerplateLines.has(l.trim())).join("\n"),
+        }));
+
+    const { data: modelCfg } = await sb
+      .from("model_configurations").select("*").eq("active", true)
+      .order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (!modelCfg) throw new Error("Nenhum modelo ativo configurado.");
+
+    const effModel = data.modelOverride?.model?.trim() || modelCfg.model_name;
+    const effTemp = data.modelOverride?.temperature ?? (Number(modelCfg.temperature) || 0.2);
+    const effMaxTokens = data.modelOverride?.maxTokens ?? modelCfg.max_tokens;
+
+
+    const { data: topicsRaw } = await sb
+      .from("topics")
+      .select("id, topic_definition_id, topic_definitions(slug, name, description, aliases)")
+      .eq("project_id", data.projectId);
+
+    const allTopics: TopicLite[] = (topicsRaw ?? []).map((t) => {
+      const td = t.topic_definitions as {
+        slug: string; name: string; description: string | null; aliases: string[];
+      } | null;
+      return {
+        topicId: t.id,
+        defId: t.topic_definition_id,
+        slug: td?.slug ?? "",
+        name: td?.name ?? "",
+        description: td?.description ?? "",
+        aliases: td?.aliases ?? [],
+      };
+    });
+    if (allTopics.length === 0) throw new Error("Nenhum tópico encontrado.");
+
+    // ---- Chunk → topic classification (LLM-based, cached in raw_chunks.metadata) ----
+    // Replaces aliasMatch (plain word-matching) as the chunk-topic filter below. Classified
+    // once against the FULL topic list (not just the topic(s) this run targets) so the
+    // cache is reusable no matter which topic is re-extracted next. A chunk is only ever
+    // classified once, ever — the result is persisted, so repeated "Re-extrair" runs incur
+    // no further classification cost, only the per-topic extraction calls.
+    const CLASSIFICATION_CACHE_KEY = "__topic_classification_v1";
+    const CLASSIFY_BATCH_SIZE = 15;
+    const chunkTopicMap = new Map<string, string[]>();
+    const toClassify: typeof chunks = [];
+    for (const c of chunks) {
+      const meta = (c as { metadata?: unknown }).metadata as { [k: string]: unknown } | null;
+      const cached = meta && typeof meta === "object" ? (meta[CLASSIFICATION_CACHE_KEY] as { slugs?: string[] } | undefined) : undefined;
+      if (cached && Array.isArray(cached.slugs)) {
+        chunkTopicMap.set(c.id, cached.slugs);
+      } else {
+        toClassify.push(c);
+      }
+    }
+    for (let i = 0; i < toClassify.length; i += CLASSIFY_BATCH_SIZE) {
+      const batch = toClassify.slice(i, i + CLASSIFY_BATCH_SIZE);
+      // A single transient failure (e.g. rate limit on a free-tier key) must not abort the
+      // whole run — leave this batch's chunks uncached and let a future run pick them up.
+      try {
+        const { result, inT, outT } = await classifyChunksBatchLLM(batch, allTopics, effModel, effTemp);
+        await sb.from("llm_calls").insert({
+          prompt_type: "classify_batch",
+          model_name: effModel,
+          input_tokens: inT, output_tokens: outT, latency: 0,
+          estimated_cost: estimateCost(effModel, inT, outT),
+        } as never);
+        for (const c of batch) {
+          const slugs = result.get(c.id) ?? [];
+          chunkTopicMap.set(c.id, slugs);
+          const meta = (c as { metadata?: unknown }).metadata;
+          const baseMeta = meta && typeof meta === "object" && !Array.isArray(meta) ? meta as Record<string, unknown> : {};
+          await sb.from("raw_chunks").update({
+            metadata: { ...baseMeta, [CLASSIFICATION_CACHE_KEY]: { slugs, at: new Date().toISOString() } },
+          } as never).eq("id", c.id);
+        }
+      } catch (e) {
+        console.error("classifyChunksBatchLLM batch failed, skipping (will retry next run)", e);
+      }
+      // Small pacing delay between batches — free-tier keys are commonly rate-limited per minute.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    let topics: TopicLite[] = allTopics;
+    if (data.topicSlug) topics = topics.filter((t) => t.slug === data.topicSlug);
+    if (topics.length === 0) throw new Error("Nenhum tópico encontrado.");
+
+    const defIds = topics.map((t) => t.defId);
+    const { data: dpdRaw } = await sb
+      .from("data_point_definitions").select("*").in("topic_definition_id", defIds).eq("active", true);
+    type DpdFull = DpdLite & { field_label: string; description: string | null };
+    const dpdByDefId = new Map<string, DpdFull[]>();
+    for (const d of dpdRaw ?? []) {
+      const list = dpdByDefId.get(d.topic_definition_id) ?? [];
+      list.push({
+        field_name: d.field_name,
+        field_label: d.field_label,
+        field_type: d.field_type,
+        description: d.description,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        extraction_strategy: (d as any).extraction_strategy ?? null,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        regex_pattern: (d as any).regex_pattern ?? null,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        keywords: (d as any).keywords ?? {},
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        negative_keywords: (d as any).negative_keywords ?? [],
+      });
+      dpdByDefId.set(d.topic_definition_id, list);
+    }
+
+    const CHUNK_CAP = 25;
+    const CHUNK_CHAR_CAP = 1600;
+    const MAX_BATCHES = 4; // safety cap: up to CHUNK_CAP*MAX_BATCHES chunks sent to the LLM per topic
+    const result: Array<{
+      topic_slug: string;
+      core_filled: number;
+      core_total: number;
+      additional_info_chars: number;
+      chunks_used: number;
+      input_tokens: number;
+      output_tokens: number;
+    }> = [];
+
+    for (const topic of topics) {
+      const dps = dpdByDefId.get(topic.defId) ?? [];
+      const classified = chunks.filter((c) => (chunkTopicMap.get(c.id) ?? []).includes(topic.slug));
+      if (classified.length === 0) {
+        result.push({
+          topic_slug: topic.slug, core_filled: 0, core_total: dps.length,
+          additional_info_chars: 0, chunks_used: 0, input_tokens: 0, output_tokens: 0,
+        });
+        continue;
+      }
+
+      const coreValues = new Map<string, { value: unknown; chunkId: string }>();
+      const usedChunkIds: string[] = [];
+      let additionalInfoText = "";
+      let inT = 0, outT = 0;
+
+      const dpTypeByName = new Map(dps.map((d) => [d.field_name, d.field_type]));
+      const timeStarts = dps.filter((d) => d.field_type === "time" && /(_start_time|_start|_inicio|_inicio_time)$/.test(d.field_name));
+      const allowedCore = new Set(dps.map((d) => d.field_name));
+      const coreAlias = new Map<string, string>();
+      for (const d of dps) {
+        for (const v of fieldKeyVariants(d.field_name)) coreAlias.set(v, d.field_name);
+        for (const v of fieldKeyVariants(d.field_label)) coreAlias.set(v, d.field_name);
+      }
+      const resolve = (name: string): string | null => {
+        if (allowedCore.has(name)) return name;
+        for (const v of fieldKeyVariants(name)) {
+          const hit = coreAlias.get(v);
+          if (hit) return hit;
+        }
+        return null;
+      };
+
+      // Batch through every alias-matched chunk (not just the first CHUNK_CAP) so no
+      // relevant content is skipped, but keep each LLM call's context small (one batch
+      // of CHUNK_CAP chunks at a time) and stop as soon as every field is resolved —
+      // this is what bounds both token spend and per-call context size.
+      const totalBatches = Math.min(MAX_BATCHES, Math.ceil(classified.length / CHUNK_CAP));
+      for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+        const useChunks = classified.slice(batchIdx * CHUNK_CAP, (batchIdx + 1) * CHUNK_CAP);
+        if (useChunks.length === 0) break;
+        usedChunkIds.push(...useChunks.map((c) => c.id));
+
+        // ---- Pair pass: handle *_start_time / *_end_time atomically (deterministic, free) ----
+        // (a single regex match would otherwise fill BOTH fields with the same first time)
+        for (const startDpd of timeStarts) {
+          if (coreValues.has(startDpd.field_name)) continue;
+          const base = startDpd.field_name.replace(/(_start_time|_start|_inicio|_inicio_time)$/, "");
+          const endDpd = dps.find((d) => d.field_type === "time" && (d.field_name === `${base}_end_time` || d.field_name === `${base}_end` || d.field_name === `${base}_fim` || d.field_name === `${base}_fim_time`));
+          if (!endDpd) continue;
+          for (const c of useChunks) {
+            // Only search inside sentences that actually mention this topic — avoid grabbing checkout/checkin times for breakfast.
+            const snippet = topicRelevantSnippet(c.content, topic);
+            const range = extractTimeRange(snippet);
+            if (!range) continue;
+            if (!isSaneTimeRange(range, topic.slug, startDpd.field_name, endDpd.field_name)) continue;
+            if (!coreValues.has(startDpd.field_name)) coreValues.set(startDpd.field_name, { value: range.start, chunkId: c.id });
+            if (!coreValues.has(endDpd.field_name)) coreValues.set(endDpd.field_name, { value: range.end, chunkId: c.id });
+            break;
+          }
+        }
+
+        // Per-field deterministic pass — first-match wins, restricted to topic-relevant sentences.
+        for (const c of useChunks) {
+          const snippet = topicRelevantSnippet(c.content, topic);
+          for (const d of dps) {
+            if (coreValues.has(d.field_name)) continue;
+            const det = tryDeterministic(d, snippet);
+            if (!det) continue;
+            if (d.field_type === "time" && !isSaneTime(det.value, topic.slug, d.field_name)) continue;
+            coreValues.set(d.field_name, { value: det.value, chunkId: c.id });
+          }
+        }
+
+        const unresolved = dps.filter((d) => !coreValues.has(d.field_name));
+        if (unresolved.length === 0) break; // everything resolved deterministically — skip the LLM call entirely
+
+        const combinedText = useChunks
+          .map((c, i) => `[chunk ${i + 1} · ${c.id.slice(0, 6)}]\n${topicRelevantSnippet(c.content, topic).slice(0, CHUNK_CHAR_CAP)}`)
+          .join("\n---\n")
+          .slice(0, 14000);
+
+        const dpList = unresolved.map((d) => `- ${d.field_name} (${d.field_type})${d.field_label ? ` — ${d.field_label}` : ""}${d.description ? `: ${d.description}` : ""}`).join("\n");
+
+        const sys = [
+          "Você extrai informações estruturadas de textos de hotéis em pt-BR. Responda APENAS com JSON válido.",
+          "REGRAS:",
+          "1. Use SOMENTE informações presentes nos textos. Não invente. Se a informação não está nos textos, OMITA o campo.",
+          "2. Atribua cada horário ao tópico CORRETO. Nunca confunda café da manhã com check-in/check-out/jantar. Exemplos: '20:00 check-out' NÃO é horário de café da manhã; '15:00 check-in' NÃO é horário de almoço.",
+          "3. Plausibilidade por tópico (descarte o valor se estiver fora destas faixas):",
+          "   - café da manhã: 04:00–13:00",
+          "   - almoço: 10:00–16:00 · jantar: 17:00–23:00",
+          "   - check-in: 10:00–23:00 · check-out: 04:00–14:00",
+          "   - piscina: 06:00–22:00 · academia: 05:00–23:00 · spa: 08:00–22:00",
+          "4. Campos de horário (field_type=time) devem vir em HH:MM (24h). '07h' → '07:00', '10h30' → '10:30'.",
+          "5. Em intervalo ('07h às 10h', '6:30 até 10h', 'das 7 às 10'), preencha *_start_time e *_end_time com valores DIFERENTES e na ordem correta (start < end).",
+          "6. Campos boolean: true/false (sem string). Campos number/currency: número puro, sem moeda.",
+          "7. Campos de texto curtos (location, name): só o trecho factual. Detalhes acessórios vão em additional_info.",
+          "8. Prefira preencher core_fields. additional_info é APENAS para o que NÃO couber em campo oficial.",
+        ].join("\n");
+        const user = `TÓPICO: ${topic.name} (${topic.slug})\n${topic.description ? `DESCRIÇÃO: ${topic.description}\n` : ""}\nCAMPOS OFICIAIS A EXTRAIR (preencha o máximo possível, mas SEMPRE respeitando o tópico):\n${dpList}\n\nTEXTOS DISPONÍVEIS (já filtrados para este tópico, mas podem conter frases de contexto vizinho — IGNORE horários que pertençam a outros tópicos):\n${combinedText}\n\nResponda com JSON estritamente neste formato:\n{\n  "core_fields": { "field_name_oficial": valor_no_tipo_certo, ... },\n  "additional_info": "Narrativa em pt-BR com TUDO que for relevante e não couber em core_fields. Pode ficar vazia."\n}`;
+
+        try {
+          const res = await callGateway({
+            model: effModel,
+            temperature: effTemp,
+            maxTokens: effMaxTokens,
+            system: sys,
+            user,
+            jsonMode: true,
+          });
+          inT += res.inputTokens; outT += res.outputTokens;
+          await sb.from("llm_calls").insert({
+            prompt_type: `extract_aggregated:${topic.slug}`,
+            model_name: effModel,
+            input_tokens: res.inputTokens, output_tokens: res.outputTokens, latency: res.latency,
+            estimated_cost: estimateCost(effModel, res.inputTokens, res.outputTokens),
+          } as never);
+
+          try {
+            const parsed = parseJsonLenient(res.content) as {
+              core_fields?: Record<string, unknown>;
+              additional_info?: string;
+            };
+            for (const [name, val] of Object.entries(parsed.core_fields ?? {})) {
+              if (isEmptyValue(val)) continue;
+              const canonical = resolve(name);
+              if (!canonical) continue;
+              if (coreValues.has(canonical)) continue;
+              // Sanity check: drop nonsensical time values (e.g. café da manhã 20:00).
+              if (dpTypeByName.get(canonical) === "time" && !isSaneTime(val, topic.slug, canonical)) continue;
+              coreValues.set(canonical, { value: val, chunkId: useChunks[0].id });
+            }
+            if (typeof parsed.additional_info === "string" && parsed.additional_info.trim()) {
+              const chunk = parsed.additional_info.trim();
+              additionalInfoText = additionalInfoText ? `${additionalInfoText}\n${chunk}` : chunk;
+            }
+          } catch (e) {
+            console.error("Parse aggregated extraction failed", topic.slug, e);
+          }
+        } catch (e) {
+          console.error("Aggregated extraction LLM call failed", topic.slug, e);
+        }
+
+        const stillUnresolved = dps.filter((d) => !coreValues.has(d.field_name));
+        if (stillUnresolved.length === 0) break; // every field filled — no need to scan further batches
+        // Small pacing delay — free-tier keys are commonly rate-limited per minute.
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
+      additionalInfoText = removeCoreFactsFromAdditionalInfo(additionalInfoText, topic.slug, coreValues);
+
+      // ---- Persist core fields ----
+      const { data: existingFields } = await sb
+        .from("knowledge_fields").select("id, field_name, field_origin, approved_by_user")
+        .eq("topic_id", topic.topicId);
+      const existing = existingFields ?? [];
+
+      for (const d of dps) {
+        const newVal = coreValues.get(d.field_name);
+        if (!newVal) continue;
+        const ex = existing.find((f) => f.field_name === d.field_name && f.field_origin === "core");
+        if (ex?.approved_by_user) continue;
+        const payload = {
+          topic_id: topic.topicId,
+          field_name: d.field_name,
+          field_type: d.field_type,
+          field_value: newVal.value,
+          field_origin: "core",
+          approved_by_user: false,
+          source_of_truth: "auto_single_candidate",
+          consolidation_status: "consolidated",
+          source_chunk_ids: [newVal.chunkId],
+          confidence: 0.85,
+        };
+        if (ex) {
+          await assertDb(sb.from("knowledge_fields").update(payload as never).eq("id", ex.id), `Atualizar ${d.field_name}`);
+        } else {
+          await assertDb(sb.from("knowledge_fields").insert(payload as never), `Criar ${d.field_name}`);
+        }
+      }
+
+      // Remove dynamic fields — they should live inside additional_info.
+      const dynamicIds = existing.filter((f) => f.field_origin === "dynamic").map((f) => f.id);
+      if (dynamicIds.length > 0) {
+        await assertDb(sb.from("knowledge_fields").delete().in("id", dynamicIds), "Remover campos dinâmicos duplicados");
+      }
+
+      // ---- Persist additional_info ----
+      const { data: addls } = await sb
+        .from("additional_info").select("id, source_chunk_ids, status").eq("topic_id", topic.topicId);
+      const aiAddls = (addls ?? []).filter((a) => (a.source_chunk_ids ?? []).length > 0);
+      if (aiAddls.length > 0) {
+        await assertDb(
+          sb.from("additional_info").update({ status: "rejected" } as never)
+            .in("id", aiAddls.map((a) => a.id)),
+          "Arquivar narrativa anterior",
+        );
+      }
+      if (additionalInfoText.length > 0) {
+        const userEdit = (addls ?? []).find(
+          (a) => (a.source_chunk_ids ?? []).length === 0 && a.status === "approved",
+        );
+        await assertDb(sb.from("additional_info").insert({
+          topic_id: topic.topicId,
+          content: additionalInfoText,
+          status: userEdit ? "pending" : "approved",
+          source_chunk_ids: usedChunkIds,
+          approved_at: userEdit ? null : new Date().toISOString(),
+        } as never), "Criar narrativa complementar");
+      }
+
+      result.push({
+        topic_slug: topic.slug,
+        core_filled: coreValues.size,
+        core_total: dps.length,
+        additional_info_chars: additionalInfoText.length,
+        chunks_used: usedChunkIds.length,
+        input_tokens: inT,
+        output_tokens: outT,
+      });
+    }
+
+    return { topics: result };
+  });
+
+// =====================================================
+// runTestAnswer (unchanged behavior)
+// =====================================================
+export const runTestAnswer = createServerFn({ method: "POST" })
+  .inputValidator((input: { questionId: string; mode: "structured" | "raw_chunks" }) => input)
+  .handler(async ({ data }) => {
+    const sb = getSb();
+
+    const { data: q } = await sb
+      .from("test_questions").select("*").eq("id", data.questionId).maybeSingle();
+    if (!q) throw new Error("Pergunta não encontrada");
+
+    const { data: tmpl } = await sb
+      .from("prompt_templates").select("*").eq("type", "answer")
+      .order("created_at", { ascending: false }).limit(1).maybeSingle();
+    const { data: modelCfg } = await sb
+      .from("model_configurations").select("*").eq("active", true)
+      .order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (!tmpl || !modelCfg) throw new Error("Configuração de prompt/modelo ausente.");
+
+    const { data: topicsRaw } = await sb
+      .from("topics")
+      .select("id, topic_definitions(slug, name, aliases)")
+      .eq("project_id", q.project_id);
+    type T = { id: string; slug: string; name: string; aliases: string[] };
+    const topics: T[] = (topicsRaw ?? []).map((t) => {
+      const td = t.topic_definitions as { slug: string; name: string; aliases: string[] } | null;
+      return { id: t.id, slug: td?.slug ?? "", name: td?.name ?? "", aliases: td?.aliases ?? [] };
+    });
+    const qLower = q.question.toLowerCase();
+    const matched = topics.filter((t) =>
+      [t.slug, t.name.toLowerCase(), ...t.aliases.map((a) => a.toLowerCase())]
+        .some((kw) => kw && qLower.includes(kw)),
+    );
+    const useTopics = matched.length > 0 ? matched : topics;
+
+    let contextText = "";
+    const contextSent: Record<string, unknown> = { mode: data.mode, matched_topics: useTopics.map((t) => t.slug) };
+
+    if (data.mode === "structured") {
+      const lines: string[] = [];
+      for (const t of useTopics) {
+        const { data: fields } = await sb
+          .from("knowledge_fields").select("*")
+          .eq("topic_id", t.id)
+          .eq("consolidation_status", "consolidated");
+        const { data: addl } = await sb
+          .from("additional_info").select("content")
+          .eq("topic_id", t.id)
+          .eq("status", "approved");
+        if ((fields?.length ?? 0) === 0 && (addl?.length ?? 0) === 0) continue;
+        lines.push(`# Tópico: ${t.name} (${t.slug})`);
+        for (const f of fields ?? []) {
+          const v = typeof f.field_value === "object" ? JSON.stringify(f.field_value) : String(f.field_value);
+          const verified = f.verified ? " ✓" : "";
+          lines.push(`- ${f.field_name}: ${v}${verified}`);
+        }
+        if ((addl?.length ?? 0) > 0) {
+          lines.push(`Informações adicionais:`);
+          for (const a of addl ?? []) lines.push(`- ${a.content}`);
+        }
+        lines.push("");
+      }
+      contextText = lines.join("\n") || "(base estruturada vazia — rode Consolidation primeiro)";
+      contextSent.structured_context = contextText;
+    } else {
+      const { data: sources } = await sb
+        .from("raw_sources").select("id").eq("project_id", q.project_id);
+      const sourceIds = (sources ?? []).map((s) => s.id);
+      const { data: chunks } = await sb
+        .from("raw_chunks").select("id, content").in("raw_source_id", sourceIds).limit(500);
+      const keywords = useTopics.flatMap((t) => [t.slug, t.name.toLowerCase(), ...t.aliases.map((a) => a.toLowerCase())]);
+      let filtered = (chunks ?? []).filter((c) =>
+        keywords.some((kw) => kw && c.content.toLowerCase().includes(kw)),
+      );
+      if (filtered.length === 0) filtered = (chunks ?? []).slice(0, 30);
+      filtered = filtered.slice(0, 40);
+      contextText = filtered.map((c) => `[chunk ${c.id}] ${c.content}`).join("\n---\n") || "(sem chunks)";
+      contextSent.raw_chunks_count = filtered.length;
+    }
+
+    const userPrompt = `CONTEXTO:\n${contextText}\n\nPERGUNTA: ${q.question}`;
+    const result = await callGateway({
+      model: modelCfg.model_name,
+      temperature: Number(modelCfg.temperature),
+      maxTokens: modelCfg.max_tokens,
+      system: tmpl.content,
+      user: userPrompt,
+    });
+
+    const cost = estimateCost(modelCfg.model_name, result.inputTokens, result.outputTokens);
+
+    const { data: llmCall } = await sb.from("llm_calls").insert({
+      prompt_type: `answer:${data.mode}`,
+      model_name: modelCfg.model_name,
+      input_tokens: result.inputTokens,
+      output_tokens: result.outputTokens,
+      latency: result.latency,
+      estimated_cost: cost,
+      response: { content: result.content } as never,
+    }).select("id").single();
+
+    const { data: testRun } = await sb.from("test_runs").insert({
+      question_id: q.id,
+      mode: data.mode,
+      prompt_template_id: tmpl.id,
+      model_configuration_id: modelCfg.id,
+      context_sent: contextSent as never,
+      answer: result.content,
+      llm_call_id: llmCall?.id ?? null,
+    }).select("*").single();
+
+    if (llmCall?.id && testRun?.id) {
+      await sb.from("llm_calls").update({ test_run_id: testRun.id }).eq("id", llmCall.id);
+    }
+
+    return {
+      answer: result.content,
+      latency: result.latency,
+      input_tokens: result.inputTokens,
+      output_tokens: result.outputTokens,
+      estimated_cost: cost,
+      test_run_id: testRun?.id ?? null,
+    };
+  });
